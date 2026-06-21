@@ -1,0 +1,14 @@
+anthropic
+groq
+openpyxl
+PyQt6
+python-dotenv
+pyinstaller
+Pillow
+GPUtil
+psutil
+pdf2image
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+pyqt6-sip
