@@ -1,428 +1,428 @@
-from PyQt6.QtWidgets import (
-    QMainWindow, QToolBar, QStatusBar, QVBoxLayout, QHBoxLayout,
-    QWidget, QLabel, QPushButton, QComboBox, QFileDialog,
-    QSplitter, QScrollArea, QFrame, QMessageBox, QHBoxLayout,
-    QRadioButton, QButtonGroup
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QDragEnterEvent, QDropEvent, QAction, QMouseEvent
-from PyQt6.QtWidgets import QDialog
-from pathlib import Path
-import json
-import os
-import shutil
-import tempfile
+"""
+Main window — Google Drive integration removed in full.
+All config I/O now goes through core.config so reads and writes hit the
+same file (fixing the "Groq key doesn't stick" bug).
+"""
 import threading
+import os
+from pathlib import Path
 
-from ui.preview_widget import PreviewWidget
-from ui.settings_dialog import SettingsDialog, load_config
-from ui.ollama_warning_dialog import OllamaWarningDialog
-from ui.quota_prompt_dialog import QuotaPromptDialog
-from ui.first_run_wizard import FirstRunWizard
+from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt6.QtGui import (
+    QAction, QColor, QDragEnterEvent, QDropEvent,
+    QMouseEvent, QPixmap
+)
+from PyQt6.QtWidgets import (
+    QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame,
+    QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStatusBar,
+    QToolBar, QVBoxLayout, QWidget
+)
+
+from core.config import load_config, save_config, set_active_profile
 from core.extractor import extract_table, get_available_backend
 from core.backends.ollama_backend import is_ollama_running, check_model_available
 from core.exporter import export_csv, export_excel
 from core.preprocessor import preprocess_image, pdf_to_images
 from core.hardware_check import check_ollama_requirements
 
+from ui.preview_widget import PreviewWidget
+from ui.settings_dialog import SettingsDialog
+from ui.ollama_warning_dialog import OllamaWarningDialog
+from ui.quota_prompt_dialog import QuotaPromptDialog
+from ui.first_run_wizard import FirstRunWizard
+
+
+# ──────────────────────────────── background worker ──────────────────────────
 
 class ExtractionWorker(QThread):
     status_update = pyqtSignal(str)
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, image_bytes, media_type, config):
+    # signals used to ask the main thread to show dialogs, then wait
+    quota_needed = pyqtSignal(dict, list)
+    ollama_hw_needed = pyqtSignal(dict)
+
+    def __init__(self, image_bytes: bytes, media_type: str, config: dict):
         super().__init__()
         self.image_bytes = image_bytes
         self.media_type = media_type
         self.config = config
-        self._quota_choice = None
-        self._ollama_proceeded = False
+        self._quota_choice = "cancel"
+        self._ollama_ok = False
         self._quota_event = threading.Event()
         self._ollama_event = threading.Event()
 
-    def quota_callback(self, profile, other_profiles):
-        self._quota_choice = None
-        self.status_update.emit("Claude quota reached — awaiting user choice...")
+    # Called from this thread, unblocks when main thread calls resolve_*
+    def _quota_cb(self, profile, others):
+        self._quota_choice = "cancel"
         self._quota_event.clear()
+        self.quota_needed.emit(profile, others)
         self._quota_event.wait()
         return self._quota_choice
 
-    def ollama_hw_callback(self, hw_info):
-        self._ollama_proceeded = False
-        self.status_update.emit("Ollama hardware check required — awaiting confirmation...")
+    def _ollama_hw_cb(self, hw):
+        self._ollama_ok = False
         self._ollama_event.clear()
+        self.ollama_hw_needed.emit(hw)
         self._ollama_event.wait()
-        return self._ollama_proceeded
+        return self._ollama_ok
 
-    def resolve_quota(self, choice):
+    # Called from main thread
+    def resolve_quota(self, choice: str):
         self._quota_choice = choice
         self._quota_event.set()
 
-    def resolve_ollama_hw(self, proceed):
-        self._ollama_proceeded = proceed
+    def resolve_ollama_hw(self, proceed: bool):
+        self._ollama_ok = proceed
         self._ollama_event.set()
 
     def run(self):
         try:
             result = extract_table(
-                self.image_bytes, self.media_type, self.config,
+                self.image_bytes,
+                self.media_type,
+                self.config,
                 status_cb=self.status_update.emit,
-                quota_cb=None if self.config.get("AUTO_FALLBACK") else self.quota_callback,
-                ollama_hw_cb=None if self.config.get("AUTO_FALLBACK") else self.ollama_hw_callback,
+                quota_cb=None if self.config.get("AUTO_FALLBACK") else self._quota_cb,
+                ollama_hw_cb=self._ollama_hw_cb,
             )
             self.finished.emit(result)
-        except RuntimeError as e:
-            self.error.emit(str(e))
         except Exception as e:
             self.error.emit(str(e))
 
 
-class ImagePreviewLabel(QLabel):
+# ──────────────────────────── click-to-browse image panel ────────────────────
+
+class _DropPanel(QLabel):
+    """Accepts drag-drop AND click-to-browse. Acts as the image preview."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(400, 300)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(
-            "QLabel { border: 2px dashed #aaa; border-radius: 8px; "
-            "background-color: #fafafa; color: #888; font-size: 16px; }"
-        )
-        self.setText(
-            "Click to browse or drop a file here\n\n"
-            "Supported: PNG, JPG, PDF"
-        )
+        self.setMinimumSize(400, 260)
         self.setWordWrap(True)
-        self._main = None
+        self._main_win = None
+        self._reset_style()
 
-    def set_main(self, main):
-        self._main = main
+    def set_main_win(self, w):
+        self._main_win = w
 
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton and self._main:
-            self._main._on_load_file()
+    def _reset_style(self):
+        self.setText(
+            "Drop an image or PDF here\n\n"
+            "or click to browse\n\n"
+            "Supported: PNG · JPG · PDF"
+        )
+        self.setStyleSheet(
+            "QLabel { border: 2px dashed #C0C6D4; border-radius: 12px; "
+            "background-color: #FAFBFD; color: #8B95A6; font-size: 14px; }"
+        )
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_pixmap(self, pixmap):
+    def load_pixmap(self, pixmap: QPixmap):
         if pixmap and not pixmap.isNull():
             scaled = pixmap.scaled(
-                self.size(), Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
-            super().setPixmap(scaled)
+            self.setPixmap(scaled)
+            self.setStyleSheet(
+                "QLabel { border: 1px solid #DCE0E8; border-radius: 8px; "
+                "background: white; }"
+            )
             self.setCursor(Qt.CursorShape.ArrowCursor)
-            self.setStyleSheet(
-                "QLabel { border: 2px solid #ccc; border-radius: 4px; "
-                "background-color: white; }"
-            )
-        else:
-            self.clear()
-            self.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.setStyleSheet(
-                "QLabel { border: 2px dashed #aaa; border-radius: 8px; "
-                "background-color: #fafafa; color: #888; font-size: 16px; }"
-            )
 
+    def clear_image(self):
+        self.clear()
+        self._reset_style()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton and self._main_win:
+            self._main_win._on_load_file()
+
+
+# ─────────────────────────────────── main window ─────────────────────────────
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SpreadsheetScanner")
-        self.setMinimumSize(900, 650)
+        self.setMinimumSize(920, 660)
         self.setAcceptDrops(True)
 
-        self._config = self._load_config()
-        self._current_image_bytes = None
+        self._config: dict = {}
+        self._current_image_bytes: bytes | None = None
         self._current_media_type = "image/jpeg"
-        self._pdf_pages = []
+        self._pdf_pages: list[bytes] = []
         self._selected_pdf_page = 0
-        self._extracted_data = None
-        self._worker = None
+        self._extracted_data: dict | None = None
+        self._worker: ExtractionWorker | None = None
 
-        self._setup_ui()
+        self._build_ui()
+        self._refresh_config()
         self._refresh_profile_combo()
-        self._update_backend_indicator()
+        self._update_status_bar()
         self._check_backends_on_startup()
 
-    def _load_config(self) -> dict:
-        from dotenv import load_dotenv
-        env_path = Path(__file__).parent.parent / ".env"
-        if env_path.exists():
-            load_dotenv(env_path, override=True)
-        cfg = load_config()
-        active = int(os.getenv("ACTIVE_CLAUDE_PROFILE", "0"))
-        profiles = json.loads(os.getenv("CLAUDE_PROFILES", "[]"))
-        other = [p for i, p in enumerate(profiles) if i != active]
-        return {
-            "active_profile": profiles[active] if 0 <= active < len(profiles) else None,
-            "other_profiles": other,
-            "all_profiles": profiles,
-            "active_profile_idx": active,
-            "GROQ_API_KEY": os.getenv("GROQ_API_KEY", ""),
-            "OLLAMA_BASE_URL": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            "DEFAULT_OUTPUT": os.getenv("DEFAULT_OUTPUT", "csv"),
-            "MAX_RESOLUTION": int(os.getenv("MAX_RESOLUTION", "2000")),
-            "AUTO_FALLBACK": os.getenv("AUTO_FALLBACK", "true").lower() == "true",
-        }
+    # ──────────────────────────────── config helpers
 
     def _refresh_config(self):
-        self._config = self._load_config()
+        self._config = load_config()
 
     def _get_backend_label(self) -> str:
-        backend = get_available_backend(self._config)
-        if backend == "claude":
-            profile = self._config.get("active_profile", {})
-            return f"Claude ({profile.get('name', '?')})"
-        if backend == "groq":
-            return "Groq (free tier)"
-        if backend == "ollama":
-            model_ok = check_model_available(
-                self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")
-            )
-            status = "ready" if model_ok else "no model"
-            return f"Ollama ({status})"
-        return "No backend"
+        b = get_available_backend(self._config)
+        if b == "claude":
+            name = (self._config.get("active_profile") or {}).get("name", "?")
+            return f"Backend: Claude — {name}"
+        if b == "groq":
+            return "Backend: Groq (free tier)"
+        if b == "ollama":
+            url = self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            model_ok = check_model_available(url)
+            return "Backend: Ollama — ready" if model_ok else "Backend: Ollama — model not pulled"
+        return "Backend: None configured"
 
-    def _update_backend_indicator(self):
-        label = self._get_backend_label()
-        self.statusBar().showMessage(f"Backend: {label}")
+    def _update_status_bar(self):
+        self.statusBar().showMessage(self._get_backend_label())
 
     def _check_backends_on_startup(self):
         if get_available_backend(self._config):
-            self._update_backend_indicator()
             return
-        if is_ollama_running(self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")):
-            self._update_backend_indicator()
+        url = self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        if is_ollama_running(url):
             return
         dlg = FirstRunWizard(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.should_proceed:
             if dlg.groq_key:
-                from dotenv import set_key
-                env_path = Path(__file__).parent.parent / ".env"
-                set_key(str(env_path), "GROQ_API_KEY", dlg.groq_key)
+                save_config(
+                    claude_profiles=self._config.get("all_profiles", []),
+                    active_claude_profile=self._config.get("active_profile_idx", 0),
+                    groq_api_key=dlg.groq_key,
+                    ollama_base_url=self._config.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+                    default_output=self._config.get("DEFAULT_OUTPUT", "csv"),
+                    max_resolution=self._config.get("MAX_RESOLUTION", 2000),
+                    auto_fallback=self._config.get("AUTO_FALLBACK", True),
+                )
             self._refresh_config()
-            self._update_backend_indicator()
+            self._update_status_bar()
             if dlg.should_open_settings:
                 self._on_settings()
 
-    def _setup_ui(self):
+    # ──────────────────────────────── UI construction
+
+    def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        toolbar = QToolBar("Main Toolbar")
-        toolbar.setIconSize(QSize(16, 16))
-        self.addToolBar(toolbar)
-        load_action = QAction("Load File", self)
-        load_action.triggered.connect(self._on_load_file)
-        toolbar.addAction(load_action)
-        drive_action = QAction("Import from Google Drive", self)
-        drive_action.triggered.connect(self._on_google_drive_import)
-        toolbar.addAction(drive_action)
-        settings_action = QAction("Settings", self)
-        settings_action.triggered.connect(self._on_settings)
-        toolbar.addAction(settings_action)
+        # ── Toolbar
+        tb = QToolBar()
+        tb.setMovable(False)
+        tb.setIconSize(QSize(14, 14))
+        self.addToolBar(tb)
 
-        profile_layout = QHBoxLayout()
-        profile_layout.addWidget(QLabel("Active profile:"))
-        self.profile_combo = QComboBox()
-        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        profile_layout.addWidget(self.profile_combo, 1)
-        profile_layout.addStretch(2)
-        main_layout.addLayout(profile_layout)
+        load_act = QAction("📂  Load File", self)
+        load_act.triggered.connect(self._on_load_file)
+        tb.addAction(load_act)
+        tb.addSeparator()
+        settings_act = QAction("⚙  Settings", self)
+        settings_act.triggered.connect(self._on_settings)
+        tb.addAction(settings_act)
 
+        # ── Profile row
+        profile_bar = QWidget()
+        profile_bar.setStyleSheet(
+            "background-color: #FFFFFF; border-bottom: 1px solid #DCE0E8;"
+        )
+        pb_layout = QHBoxLayout(profile_bar)
+        pb_layout.setContentsMargins(12, 6, 12, 6)
+        pb_layout.addWidget(QLabel("Active Claude profile:"))
+        self._profile_combo = QComboBox()
+        self._profile_combo.setMinimumWidth(260)
+        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        pb_layout.addWidget(self._profile_combo)
+        pb_layout.addStretch()
+        root.addWidget(profile_bar)
+
+        # ── Main splitter
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        self.image_label = ImagePreviewLabel()
-        self.image_label.set_main(self)
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Top pane: drop panel + optional PDF strip
+        top_pane = QWidget()
+        top_layout = QVBoxLayout(top_pane)
+        top_layout.setContentsMargins(10, 10, 10, 4)
+        top_layout.setSpacing(6)
 
-        image_container = QWidget()
-        image_container_layout = QVBoxLayout(image_container)
-        image_container_layout.addWidget(self.image_label)
+        self._drop_panel = _DropPanel()
+        self._drop_panel.set_main_win(self)
+        top_layout.addWidget(self._drop_panel)
 
-        self.page_strip = QHBoxLayout()
-        self.page_strip_widget = QWidget()
-        self.page_strip_widget.setLayout(self.page_strip)
-        self.page_strip_widget.hide()
-        image_container_layout.addWidget(self.page_strip_widget)
-        splitter.addWidget(image_container)
+        self._page_strip_widget = QWidget()
+        self._page_strip_layout = QHBoxLayout(self._page_strip_widget)
+        self._page_strip_layout.setContentsMargins(0, 0, 0, 0)
+        self._page_strip_widget.hide()
+        top_layout.addWidget(self._page_strip_widget)
 
-        action_layout = QHBoxLayout()
-        self.scan_btn = QPushButton("Scan / Extract")
-        self.scan_btn.clicked.connect(self._on_scan)
-        self.scan_btn.setEnabled(False)
-        self.scan_btn.setStyleSheet("QPushButton { min-height: 32px; font-weight: bold; }")
-        action_layout.addWidget(self.scan_btn)
+        splitter.addWidget(top_pane)
 
-        self.status_label = QLabel("Ready")
-        action_layout.addWidget(self.status_label, 1)
+        # Bottom pane: preview table
+        bottom_pane = QWidget()
+        bot_layout = QVBoxLayout(bottom_pane)
+        bot_layout.setContentsMargins(10, 4, 10, 10)
+        bot_layout.setSpacing(6)
 
-        output_layout = QHBoxLayout()
-        self.csv_radio = QRadioButton("CSV")
-        self.excel_radio = QRadioButton("Excel (.xlsx)")
-        self.output_group = QButtonGroup()
-        self.output_group.addButton(self.csv_radio)
-        self.output_group.addButton(self.excel_radio)
-        if self._config.get("DEFAULT_OUTPUT", "csv") == "excel":
-            self.excel_radio.setChecked(True)
-        else:
-            self.csv_radio.setChecked(True)
-        output_layout.addWidget(self.csv_radio)
-        output_layout.addWidget(self.excel_radio)
-        output_layout.addStretch()
-        save_btn = QPushButton("Save File")
-        save_btn.clicked.connect(self._on_save)
-        save_btn.setEnabled(False)
-        self.save_btn = save_btn
-        output_layout.addWidget(save_btn)
-        action_layout.addLayout(output_layout)
+        # Scan / status bar
+        scan_row = QHBoxLayout()
+        self._scan_btn = QPushButton("Scan / Extract")
+        self._scan_btn.setProperty("variant", "primary")
+        self._scan_btn.setMinimumHeight(36)
+        self._scan_btn.setMinimumWidth(160)
+        self._scan_btn.setEnabled(False)
+        self._scan_btn.clicked.connect(self._on_scan)
+        scan_row.addWidget(self._scan_btn)
 
-        action_widget = QWidget()
-        action_widget.setLayout(action_layout)
-        main_layout.addWidget(action_widget)
+        self._status_label = QLabel("Load a file to begin")
+        self._status_label.setProperty("role", "muted")
+        scan_row.addWidget(self._status_label, 1)
+        bot_layout.addLayout(scan_row)
 
-        self.preview = PreviewWidget()
-        splitter.addWidget(self.preview)
-        splitter.setSizes([300, 300])
-        main_layout.addWidget(splitter)
+        self._preview = PreviewWidget()
+        bot_layout.addWidget(self._preview)
+
+        # Export row
+        export_row = QHBoxLayout()
+        self._csv_radio = QRadioButton("CSV")
+        self._excel_radio = QRadioButton("Excel (.xlsx)")
+        self._csv_radio.setChecked(True)
+        bg = QButtonGroup(self)
+        bg.addButton(self._csv_radio)
+        bg.addButton(self._excel_radio)
+        export_row.addWidget(QLabel("Save as:"))
+        export_row.addWidget(self._csv_radio)
+        export_row.addWidget(self._excel_radio)
+        export_row.addStretch()
+        self._save_btn = QPushButton("💾  Save File")
+        self._save_btn.setEnabled(False)
+        self._save_btn.clicked.connect(self._on_save)
+        export_row.addWidget(self._save_btn)
+        bot_layout.addLayout(export_row)
+
+        splitter.addWidget(bottom_pane)
+        splitter.setSizes([300, 320])
+        root.addWidget(splitter, 1)
+
+        self.setStatusBar(QStatusBar())
+
+    # ──────────────────────────────── profile combo
 
     def _refresh_profile_combo(self):
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.clear()
-        profiles = json.loads(os.getenv("CLAUDE_PROFILES", "[]"))
-        active_idx = int(os.getenv("ACTIVE_CLAUDE_PROFILE", "0"))
+        self._profile_combo.blockSignals(True)
+        self._profile_combo.clear()
+        profiles = self._config.get("all_profiles", [])
+        active_idx = self._config.get("active_profile_idx", 0)
         for i, p in enumerate(profiles):
-            marker = " [active]" if i == active_idx else ""
-            self.profile_combo.addItem(f"{p.get('name', 'Unnamed')}{marker}", i)
+            label = p.get("name", "Unnamed")
+            model = p.get("model", "")
+            suffix = "  ✓" if i == active_idx else ""
+            self._profile_combo.addItem(f"{label}  [{model}]{suffix}", i)
         if not profiles:
-            self.profile_combo.addItem("No Claude profiles — add one in Settings", -1)
-        self.profile_combo.setCurrentIndex(active_idx if 0 <= active_idx < len(profiles) else 0)
-        self.profile_combo.blockSignals(False)
+            self._profile_combo.addItem("No Claude profiles — add one in Settings", -1)
+        self._profile_combo.setCurrentIndex(active_idx if 0 <= active_idx < len(profiles) else 0)
+        self._profile_combo.blockSignals(False)
 
-    def _on_profile_changed(self, idx):
-        if idx < 0:
-            return
-        data = self.profile_combo.itemData(idx)
+    def _on_profile_changed(self, idx: int):
+        data = self._profile_combo.itemData(idx)
         if data is not None and data >= 0:
-            from dotenv import set_key
-            set_key(".env", "ACTIVE_CLAUDE_PROFILE", str(data))
+            set_active_profile(data)
             self._refresh_config()
-            self._update_backend_indicator()
+            self._refresh_profile_combo()
+            self._update_status_bar()
+
+    # ──────────────────────────────── file loading
 
     def _on_load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Spreadsheet Photo or Scan", "",
-            "Images & PDFs (*.png *.jpg *.jpeg *.pdf);;Images (*.png *.jpg *.jpeg);;PDF (*.pdf)"
+            "Images & PDFs (*.png *.jpg *.jpeg *.pdf);;"
+            "Images (*.png *.jpg *.jpeg);;"
+            "PDF (*.pdf)"
         )
         if path:
             self._load_file(path)
 
-    def _on_google_drive_import(self):
-        try:
-            from integrations.google_drive import get_drive_service, list_recent_files, download_file
-            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QListWidget
-        except ImportError:
-            QMessageBox.critical(self, "Error", "Google Drive integration requires google-api-python-client.")
-            return
-        try:
-            service = get_drive_service()
-            files = list_recent_files(service)
-        except Exception as e:
-            QMessageBox.critical(self, "Google Drive Error", f"Could not connect to Google Drive:\n{e}")
-            return
-        if not files:
-            QMessageBox.information(self, "No Files", "No recent images or PDFs found in Google Drive.")
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Select a file from Google Drive")
-        dlg.setMinimumSize(400, 350)
-        layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel("Recent files:"))
-        lst = QListWidget()
-        for f in files:
-            lst.addItem(f["name"])
-        layout.addWidget(lst)
-        btn = QPushButton("Download selected")
-        btn.clicked.connect(dlg.accept)
-        layout.addWidget(btn)
-        if dlg.exec() == QDialog.DialogCode.Accepted and lst.currentRow() >= 0:
-            file_info = files[lst.currentRow()]
-            tmpdir = tempfile.mkdtemp()
-            dest = os.path.join(tmpdir, file_info["name"])
-            self.statusBar().showMessage(f"Downloading {file_info['name']}...")
-            try:
-                download_file(service, file_info["id"], dest)
-                self._load_file(dest)
-                self.statusBar().showMessage("Downloaded from Google Drive.")
-            except Exception as e:
-                QMessageBox.critical(self, "Download Error", str(e))
-
-    def _load_file(self, path):
-        path = Path(path)
-        suffix = path.suffix.lower()
+    def _load_file(self, path: str):
+        p = Path(path)
+        suffix = p.suffix.lower()
         self._pdf_pages = []
         self._selected_pdf_page = 0
 
         if suffix == ".pdf":
             try:
-                with open(path, "rb") as f:
-                    pdf_bytes = f.read()
-                self._pdf_pages = pdf_to_images(pdf_bytes)
+                raw = p.read_bytes()
+                self._pdf_pages = pdf_to_images(raw)
                 if not self._pdf_pages:
-                    QMessageBox.warning(self, "PDF Error", "Could not extract pages from PDF.")
+                    QMessageBox.warning(self, "PDF Error", "No pages could be extracted from this PDF.")
                     return
                 self._select_pdf_page(0)
                 self._show_page_strip()
             except ImportError:
-                QMessageBox.critical(self, "Error",
-                    "PDF support requires pdf2image and Poppler. Install Poppler and pip install pdf2image.")
-                return
+                QMessageBox.critical(self, "Missing dependency",
+                    "PDF support requires pdf2image and Poppler.\n"
+                    "Install Poppler and run: pip install pdf2image")
         elif suffix in (".png", ".jpg", ".jpeg"):
-            with open(path, "rb") as f:
-                self._current_image_bytes = f.read()
-            self._current_media_type = f"image/{'jpeg' if suffix in ('.jpg', '.jpeg') else 'png'}"
-            pixmap = QPixmap(str(path))
-            self.image_label.set_pixmap(pixmap)
-            self._pdf_pages = []
-            self._selected_pdf_page = 0
-            self.page_strip_widget.hide()
-            self.scan_btn.setEnabled(True)
+            self._current_image_bytes = p.read_bytes()
+            self._current_media_type = (
+                "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
+            )
+            pixmap = QPixmap(str(p))
+            self._drop_panel.load_pixmap(pixmap)
+            self._page_strip_widget.hide()
+            self._scan_btn.setEnabled(True)
+            self._set_status("Image loaded — click Scan / Extract to begin")
         else:
-            QMessageBox.warning(self, "Unsupported Format", f"Unsupported file format: {suffix}")
-            return
+            QMessageBox.warning(self, "Unsupported format", f"Unsupported file type: {suffix}")
 
-    def _select_pdf_page(self, idx):
+    def _select_pdf_page(self, idx: int):
         if 0 <= idx < len(self._pdf_pages):
             self._selected_pdf_page = idx
             self._current_image_bytes = self._pdf_pages[idx]
             self._current_media_type = "image/jpeg"
-            pixmap = QPixmap()
-            pixmap.loadFromData(self._current_image_bytes)
-            self.image_label.set_pixmap(pixmap)
-            self.scan_btn.setEnabled(True)
+            px = QPixmap()
+            px.loadFromData(self._current_image_bytes)
+            self._drop_panel.load_pixmap(px)
+            self._scan_btn.setEnabled(True)
 
     def _show_page_strip(self):
-        while self.page_strip.count():
-            item = self.page_strip.takeAt(0)
+        while self._page_strip_layout.count():
+            item = self._page_strip_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        layout = self.page_strip
         for i in range(len(self._pdf_pages)):
             btn = QPushButton(f"Page {i + 1}")
             btn.setCheckable(True)
-            btn.setFixedSize(80, 30)
+            btn.setFixedSize(70, 26)
             if i == self._selected_pdf_page:
                 btn.setChecked(True)
-            btn.clicked.connect(lambda checked, idx=i: self._select_pdf_page(idx))
-            layout.addWidget(btn)
-        layout.addStretch()
-        self.page_strip_widget.show()
+            btn.clicked.connect(lambda _checked, idx=i: self._select_pdf_page(idx))
+            self._page_strip_layout.addWidget(btn)
+        self._page_strip_layout.addStretch()
+        self._page_strip_widget.show()
+
+    # ──────────────────────────────── drag and drop
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
             accepted = {".png", ".jpg", ".jpeg", ".pdf"}
-            if any(Path(u.toLocalFile()).suffix.lower() in accepted for u in urls):
+            if any(
+                Path(u.toLocalFile()).suffix.lower() in accepted
+                for u in event.mimeData().urls()
+            ):
                 event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
@@ -432,82 +432,84 @@ class MainWindow(QMainWindow):
                 self._load_file(path)
                 break
 
+    # ──────────────────────────────── scan
+
     def _on_scan(self):
         if not self._current_image_bytes:
             return
         self._refresh_config()
-        config = self._config
-        backend = get_available_backend(config)
-        if not backend:
-            QMessageBox.warning(self, "No Backends",
-                "No backends available. Open Settings to add an API key "
-                "or install Ollama from https://ollama.com")
+        cfg = self._config
+
+        if not get_available_backend(cfg):
+            QMessageBox.warning(
+                self, "No backends configured",
+                "No AI backends are available.\n\n"
+                "Open Settings to add a Groq or Claude API key, or install "
+                "Ollama from https://ollama.com"
+            )
             return
-        self.scan_btn.setEnabled(False)
-        self.statusBar().showMessage("Pre-processing image...")
-        try:
-            max_px = int(os.getenv("MAX_RESOLUTION", "2000"))
-        except ValueError:
-            max_px = 2000
-        processed_bytes, media_type = preprocess_image(self._current_image_bytes, max_px)
-        self.statusBar().showMessage("Starting extraction...")
-        self._worker = ExtractionWorker(processed_bytes, media_type, config)
-        self._worker.status_update.connect(self._on_status_update)
-        self._worker.finished.connect(self._on_extraction_finished)
+
+        # Apply current output format preference
+        if cfg.get("DEFAULT_OUTPUT", "csv") == "excel":
+            self._excel_radio.setChecked(True)
+        else:
+            self._csv_radio.setChecked(True)
+
+        self._scan_btn.setEnabled(False)
+        self._set_status("Pre-processing image…")
+
+        max_px = cfg.get("MAX_RESOLUTION", 2000)
+        processed, media_type = preprocess_image(self._current_image_bytes, max_px)
+
+        self._worker = ExtractionWorker(processed, media_type, cfg)
+        self._worker.status_update.connect(self._set_status)
+        self._worker.finished.connect(self._on_extraction_done)
         self._worker.error.connect(self._on_extraction_error)
+        self._worker.quota_needed.connect(self._handle_quota_prompt)
+        self._worker.ollama_hw_needed.connect(self._handle_ollama_prompt)
         self._worker.start()
 
-    def _on_status_update(self, msg):
-        self.status_label.setText(msg)
-        self.statusBar().showMessage(msg)
-        if "Claude quota reached" in msg and self._worker:
-            self._handle_quota_prompt()
-        if "Ollama hardware check required" in msg and self._worker:
-            self._handle_ollama_prompt()
-
-    def _handle_quota_prompt(self):
-        profile = self._config.get("active_profile", {})
-        others = self._config.get("other_profiles", [])
+    def _handle_quota_prompt(self, profile: dict, others: list):
         dlg = QuotaPromptDialog(profile, others, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._worker.resolve_quota(dlg.choice)
         else:
             self._worker.resolve_quota("cancel")
 
-    def _handle_ollama_prompt(self):
-        hw = check_ollama_requirements()
+    def _handle_ollama_prompt(self, hw: dict):
         dlg = OllamaWarningDialog(hw, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._worker.resolve_ollama_hw(dlg.proceeded)
         else:
             self._worker.resolve_ollama_hw(False)
 
-    def _on_extraction_finished(self, data):
+    def _on_extraction_done(self, data: dict):
         self._extracted_data = data
-        self.preview.load_data(data)
-        headers_count = len(data.get("headers", []))
-        rows_count = len(data.get("rows", []))
-        self.status_label.setText(f"Done — {rows_count} rows x {headers_count} columns extracted")
-        self.statusBar().showMessage(f"Done — {rows_count} rows x {headers_count} columns extracted")
-        self.scan_btn.setEnabled(True)
-        self.save_btn.setEnabled(True)
+        self._preview.load_data(data)
+        rows = len(data.get("rows", []))
+        cols = len(data.get("headers", []))
+        msg = f"Done — {rows} rows × {cols} columns extracted"
+        self._set_status(msg)
+        self.statusBar().showMessage(self._get_backend_label())
+        self._scan_btn.setEnabled(True)
+        self._save_btn.setEnabled(True)
 
-    def _on_extraction_error(self, msg):
-        self.status_label.setText(f"Error: {msg}")
-        self.statusBar().showMessage(f"Error: {msg}")
-        self.scan_btn.setEnabled(True)
-        QMessageBox.critical(self, "Extraction Error", msg)
+    def _on_extraction_error(self, msg: str):
+        self._set_status(f"Error — see dialog")
+        self._scan_btn.setEnabled(True)
+        self.statusBar().showMessage(self._get_backend_label())
+        QMessageBox.critical(self, "Extraction failed", msg)
+
+    # ──────────────────────────────── save
 
     def _on_save(self):
-        data = self.preview.get_data()
+        data = self._preview.get_data()
         if not data.get("headers") and not data.get("rows"):
             return
-        is_excel = self.excel_radio.isChecked()
+        is_excel = self._excel_radio.isChecked()
         ext_filter = "Excel Workbook (*.xlsx)" if is_excel else "CSV Files (*.csv)"
-        default_suffix = ".xlsx" if is_excel else ".csv"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Extracted Data", default_suffix, ext_filter
-        )
+        default = "extracted.xlsx" if is_excel else "extracted.csv"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Extracted Data", default, ext_filter)
         if not path:
             return
         try:
@@ -515,13 +517,21 @@ class MainWindow(QMainWindow):
                 export_excel(data, path)
             else:
                 export_csv(data, path)
-            self.statusBar().showMessage(f"Saved to {path}")
+            self.statusBar().showMessage(f"Saved → {path}")
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", str(e))
+            QMessageBox.critical(self, "Save failed", str(e))
+
+    # ──────────────────────────────── settings
 
     def _on_settings(self):
         dlg = SettingsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._refresh_config()
             self._refresh_profile_combo()
-            self._update_backend_indicator()
+            self._update_status_bar()
+
+    # ──────────────────────────────── helpers
+
+    def _set_status(self, msg: str):
+        self._status_label.setText(msg)
+        self.statusBar().showMessage(msg)

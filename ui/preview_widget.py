@@ -1,4 +1,6 @@
-from PyQt6.QtWidgets import QTableWidget, QHeaderView
+from PyQt6.QtWidgets import (
+    QTableWidget, QHeaderView, QTableWidgetItem, QAbstractItemView
+)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
@@ -14,6 +16,8 @@ class PreviewWidget(QTableWidget):
             QTableWidget.EditTrigger.EditKeyPressed
         )
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ContiguousSelection)
+        self.horizontalHeader().setSectionsMovable(True)
 
     def load_data(self, data: dict):
         self.clear()
@@ -27,10 +31,9 @@ class PreviewWidget(QTableWidget):
         orange = QColor(255, 200, 100)
         for ri, row in enumerate(rows):
             for ci, val in enumerate(row):
-                item = str(val) if val is not None else ""
-                from PyQt6.QtWidgets import QTableWidgetItem
-                qitem = QTableWidgetItem(item)
-                if item == "?":
+                text = str(val) if val is not None else ""
+                qitem = QTableWidgetItem(text)
+                if text == "?":
                     qitem.setBackground(QBrush(orange))
                 self.setItem(ri, ci, qitem)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)

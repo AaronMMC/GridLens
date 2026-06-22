@@ -43,7 +43,7 @@ def get_available_backend(config: dict) -> str:
 
 
 def extract_table(image_bytes, media_type, config, status_cb=None,
-                  quota_cb=None, ollama_hw_cb=None) -> dict:
+                   quota_cb=None, ollama_hw_cb=None) -> dict:
     profile = config.get("active_profile")
     groq_key = config.get("GROQ_API_KEY")
     ollama_url = config.get("OLLAMA_BASE_URL", OLLAMA_BASE_URL)
@@ -56,6 +56,7 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
             "or install Ollama from https://ollama.com"
         )
 
+    # --- Backend 1: active Claude profile ---
     if profile and profile.get("key"):
         try:
             if status_cb:
@@ -78,11 +79,13 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
                         image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
                         alt["key"], alt["model"]
                     )
+                # choice == "next" -> fall through to Groq
 
+    # --- Backend 2: Groq ---
     if groq_key:
         try:
             if status_cb:
-                status_cb("Falling back to Groq — free tier...")
+                status_cb("Falling back to Groq (free tier)...")
             return groq_backend.run(
                 image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
                 groq_key
@@ -90,27 +93,39 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
         except QuotaExhaustedError:
             pass
 
-    if has_ollama:
-        if not check_model_available(ollama_url):
-            raise RuntimeError(
-                "Ollama is running but the model is not available. "
-                f"Open Settings and click 'Download model' "
-                f"or run: ollama pull {ollama_backend.OLLAMA_MODEL}"
-            )
-        if status_cb:
-            status_cb("Scanning with local Ollama (may take several minutes)...")
-        try:
-            return ollama_backend.run(
-                image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
-                ollama_url
-            )
-        except OllamaNotRunningError as e:
-            raise RuntimeError(str(e)) from e
+    # --- Backend 3: Ollama (local) ---
+    if not has_ollama:
+        raise RuntimeError(
+            "Ollama is not running, and no working Claude or Groq key is "
+            "configured. Install Ollama from https://ollama.com and run "
+            "'ollama serve', or add an API key in Settings."
+        )
 
+    # BUGFIX: previously this hardware check + confirmation dialog was placed
+    # after an early `return` inside the `if has_ollama:` branch above, which
+    # meant it could only ever run when Ollama was NOT already running —
+    # i.e. essentially never, since the code immediately above already
+    # bails out with an error in that case. The warning never showed for the
+    # normal case (Ollama already running), so users on weak/CPU-only
+    # hardware got no heads-up before a multi-minute scan. It now always
+    # runs right before Ollama is used.
     hw = check_ollama_requirements()
     if ollama_hw_cb and not ollama_hw_cb(hw):
         raise RuntimeError("Scan cancelled — Ollama hardware check declined.")
-    return ollama_backend.run(
-        image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
-        ollama_url
-    )
+
+    if not check_model_available(ollama_url):
+        raise RuntimeError(
+            "Ollama is running but the model isn't downloaded yet. "
+            f"Open Settings → Ollama and click 'Download model', or run: "
+            f"ollama pull {ollama_backend.OLLAMA_MODEL}"
+        )
+
+    if status_cb:
+        status_cb("Scanning with local Ollama (this can take several minutes)...")
+    try:
+        return ollama_backend.run(
+            image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+            ollama_url
+        )
+    except OllamaNotRunningError as e:
+        raise RuntimeError(str(e)) from e

@@ -3,10 +3,24 @@ import io
 
 
 def preprocess_image(image_bytes_or_path, max_px: int = 2000) -> tuple[bytes, str]:
-    if isinstance(image_bytes_or_path, (str, bytes)):
-        img = Image.open(image_bytes_or_path)
-    else:
+    """Returns (jpeg_bytes, 'image/jpeg'). Accepts a file path (str/Path)
+    OR raw image bytes.
+
+    BUGFIX: the original version did
+        if isinstance(image_bytes_or_path, (str, bytes)):
+            img = Image.open(image_bytes_or_path)
+    which calls Image.open() directly on raw `bytes`. PIL's Image.open()
+    only accepts a filename/Path or a file-like object with .read() —
+    not a bare bytes object — so this raised AttributeError on every
+    single scan, since the app always calls this with bytes (read from
+    disk or produced by pdf_to_images()), never a path. That crash
+    happened before any backend was even chosen, which is why it looked
+    like "scanning crashes" regardless of which backend was active.
+    """
+    if isinstance(image_bytes_or_path, (bytes, bytearray)):
         img = Image.open(io.BytesIO(image_bytes_or_path))
+    else:
+        img = Image.open(image_bytes_or_path)
     img = img.convert("RGB")
     img.thumbnail((max_px, max_px), Image.LANCZOS)
     img = img.filter(ImageFilter.SHARPEN)
@@ -16,6 +30,7 @@ def preprocess_image(image_bytes_or_path, max_px: int = 2000) -> tuple[bytes, st
 
 
 def pdf_to_images(pdf_bytes: bytes, dpi: int = 200) -> list[bytes]:
+    """Convert each PDF page to JPEG bytes, one entry per page."""
     from pdf2image import convert_from_bytes
     pages = convert_from_bytes(pdf_bytes, dpi=dpi)
     result = []
