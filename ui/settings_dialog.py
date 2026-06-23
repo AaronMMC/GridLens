@@ -1,410 +1,483 @@
 """
-Settings dialog — three tabs: Claude Profiles, Other Backends, Preferences.
+Settings — single scrollable page, no tabs.
 
-Key fix: previously this file saved to Path(".env") (relative to the
-process's current working directory). main_window.py read from
-Path(__file__).parent.parent / ".env" — a totally different file when
-the exe's cwd isn't the exe's own folder. Result: every save was silently
-lost. Now all I/O goes through core.config which uses core.paths to find
-the canonical location.
+Layout (top to bottom):
+  WaveHeaderWidget
+  Section: AI Backends  (Claude · Groq · Ollama)
+  Section: Custom Providers
+  Section: Preferences
+  Save / Cancel bar
 """
 import json
-import os
 import webbrowser
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton,
-    QRadioButton, QTabWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox,
+    QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from core.config import load_config, save_config
-from core.backends.claude_backend import test_key as test_claude_key
-from core.backends.groq_backend import test_key as test_groq_key
+from core.backends.claude_backend import test_key as _test_claude
+from core.backends.groq_backend import test_key as _test_groq
+from ui.animated_widgets import WaveHeaderWidget
 
 
-class _ProfileEditDialog(QDialog):
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _sep() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.HLine)
+    f.setStyleSheet("background:#2A2060; max-height:1px; border:none;")
+    return f
+
+def _lbl_section(text: str) -> QLabel:
+    l = QLabel(text)
+    l.setProperty("role", "section")
+    l.setContentsMargins(0, 6, 0, 2)
+    return l
+
+def _status_lbl() -> QLabel:
+    l = QLabel("")
+    l.setMinimumWidth(110)
+    return l
+
+def _apply_status(lbl: QLabel, ok: bool, msg: str):
+    lbl.setText(msg)
+    lbl.setProperty("role", "success" if ok else "danger")
+    lbl.style().unpolish(lbl); lbl.style().polish(lbl)
+
+
+# ── profile add/edit popup ────────────────────────────────────────────────────
+
+class _ProfileDialog(QDialog):
     def __init__(self, parent=None, profile: dict = None):
         super().__init__(parent)
-        self.setWindowTitle("Edit Profile" if profile else "Add Claude Profile")
-        self.setMinimumWidth(440)
+        self.setWindowTitle("Edit profile" if profile else "Add Claude profile")
+        self.setMinimumWidth(420)
         self._result = None
         self._build(profile or {})
 
-    def _build(self, profile: dict):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+    def _build(self, p):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
 
-        # --- Name ---
-        layout.addWidget(QLabel("Profile name:"))
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("e.g. Personal, Work, Backup")
-        self.name_edit.setText(profile.get("name", ""))
-        layout.addWidget(self.name_edit)
+        lay.addWidget(QLabel("Profile name:"))
+        self.name = QLineEdit(p.get("name", ""))
+        self.name.setPlaceholderText("e.g. Personal, Work, Backup")
+        lay.addWidget(self.name)
 
-        # --- API Key ---
-        layout.addWidget(QLabel("Anthropic API key:"))
+        lay.addWidget(QLabel("Anthropic API key:"))
         row = QHBoxLayout()
-        self.key_edit = QLineEdit()
-        self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_edit.setPlaceholderText("sk-ant-...")
-        self.key_edit.setText(profile.get("key", ""))
-        row.addWidget(self.key_edit)
-        show_btn = QPushButton("Show")
-        show_btn.setCheckable(True)
-        show_btn.setFixedWidth(54)
-        show_btn.toggled.connect(
-            lambda on: self.key_edit.setEchoMode(
-                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
-            )
-        )
-        row.addWidget(show_btn)
-        layout.addLayout(row)
+        self.key = QLineEdit(p.get("key", ""))
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setPlaceholderText("sk-ant-...")
+        row.addWidget(self.key)
+        show = QPushButton("Show"); show.setCheckable(True); show.setFixedWidth(52)
+        show.toggled.connect(lambda on: self.key.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
+        row.addWidget(show)
+        lay.addLayout(row)
 
-        # Inline "Test key" feedback
-        test_row = QHBoxLayout()
-        test_btn = QPushButton("Test key")
-        test_btn.clicked.connect(self._test_key)
-        self._claude_status = QLabel("")
-        test_row.addWidget(test_btn)
-        test_row.addWidget(self._claude_status, 1)
-        layout.addLayout(test_row)
+        tr = QHBoxLayout()
+        tb = QPushButton("Test key"); tb.clicked.connect(self._test)
+        self._st = _status_lbl()
+        tr.addWidget(tb); tr.addWidget(self._st, 1)
+        lay.addLayout(tr)
 
-        get_btn = QPushButton("Get / top up key  →  console.anthropic.com")
-        get_btn.setProperty("variant", "link")
-        get_btn.clicked.connect(lambda: webbrowser.open("https://console.anthropic.com"))
-        layout.addWidget(get_btn)
+        link = QPushButton("Get / top up key  ->  console.anthropic.com")
+        link.setProperty("variant", "link")
+        link.clicked.connect(lambda: webbrowser.open("https://console.anthropic.com"))
+        lay.addWidget(link)
 
-        # --- Model ---
-        layout.addWidget(QLabel("Model:"))
-        self.model_combo = QComboBox()
-        self.model_combo.addItem("claude-sonnet-4-6  (faster, cheaper)", "claude-sonnet-4-6")
-        self.model_combo.addItem("claude-opus-4-6    (best for messy handwriting)", "claude-opus-4-6")
-        saved_model = profile.get("model", "claude-sonnet-4-6")
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == saved_model:
-                self.model_combo.setCurrentIndex(i)
-                break
-        layout.addWidget(self.model_combo)
+        lay.addWidget(QLabel("Model:"))
+        self.model = QComboBox()
+        self.model.addItem("claude-sonnet-4-6  (faster, cheaper)", "claude-sonnet-4-6")
+        self.model.addItem("claude-opus-4-6    (best accuracy)", "claude-opus-4-6")
+        saved = p.get("model", "claude-sonnet-4-6")
+        for i in range(self.model.count()):
+            if self.model.itemData(i) == saved:
+                self.model.setCurrentIndex(i); break
+        lay.addWidget(self.model)
 
-        # --- Buttons ---
-        btn_row = QHBoxLayout()
-        save_btn = QPushButton("Save profile")
-        save_btn.setProperty("variant", "primary")
-        save_btn.clicked.connect(self._on_save)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addStretch()
-        btn_row.addWidget(save_btn)
-        btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+        btns = QHBoxLayout()
+        ok = QPushButton("Save profile"); ok.setProperty("variant", "primary"); ok.clicked.connect(self._save)
+        ca = QPushButton("Cancel"); ca.clicked.connect(self.reject)
+        btns.addStretch(); btns.addWidget(ok); btns.addWidget(ca)
+        lay.addLayout(btns)
 
-    def _test_key(self):
-        ok, msg = test_claude_key(self.key_edit.text())
-        self._claude_status.setText(msg)
-        self._claude_status.setProperty("role", "success" if ok else "danger")
-        self._claude_status.style().unpolish(self._claude_status)
-        self._claude_status.style().polish(self._claude_status)
+    def _test(self):
+        ok, msg = _test_claude(self.key.text())
+        _apply_status(self._st, ok, msg)
 
-    def _on_save(self):
-        name = self.name_edit.text().strip()
-        key = self.key_edit.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Missing name", "Please enter a name for this profile.")
+    def _save(self):
+        if not self.name.text().strip():
+            QMessageBox.warning(self, "Missing name", "Please enter a profile name.")
             return
-        self._result = {
-            "name": name,
-            "key": key,
-            "model": self.model_combo.currentData(),
-        }
+        self._result = {"name": self.name.text().strip(),
+                        "key":  self.key.text().strip(),
+                        "model": self.model.currentData()}
         self.accept()
 
     @property
-    def result(self):
-        return self._result
+    def result(self): return self._result
 
+
+# ── custom provider popup ─────────────────────────────────────────────────────
+
+class _CustomDialog(QDialog):
+    def __init__(self, parent=None, provider: dict = None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit provider" if provider else "Add custom provider")
+        self.setMinimumWidth(440)
+        self._result = None
+        self._build(provider or {})
+
+    def _build(self, p):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        hint = QLabel("Store API keys for any OpenAI-compatible endpoint.")
+        hint.setProperty("role", "muted"); hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        lay.addWidget(QLabel("Provider name:"))
+        self.name = QLineEdit(p.get("name", ""))
+        self.name.setPlaceholderText("e.g. OpenAI, Mistral, My Local LLM")
+        lay.addWidget(self.name)
+
+        lay.addWidget(QLabel("API key:"))
+        row = QHBoxLayout()
+        self.key = QLineEdit(p.get("key", ""))
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setPlaceholderText("sk-...")
+        row.addWidget(self.key)
+        show = QPushButton("Show"); show.setCheckable(True); show.setFixedWidth(52)
+        show.toggled.connect(lambda on: self.key.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
+        row.addWidget(show)
+        lay.addLayout(row)
+
+        lay.addWidget(QLabel("Base URL (optional):"))
+        self.url = QLineEdit(p.get("base_url", ""))
+        self.url.setPlaceholderText("https://api.openai.com/v1")
+        lay.addWidget(self.url)
+
+        lay.addWidget(QLabel("Model name (optional):"))
+        self.model = QLineEdit(p.get("model", ""))
+        self.model.setPlaceholderText("e.g. gpt-4o, mistral-7b-instruct")
+        lay.addWidget(self.model)
+
+        btns = QHBoxLayout()
+        ok = QPushButton("Save"); ok.setProperty("variant", "primary"); ok.clicked.connect(self._save)
+        ca = QPushButton("Cancel"); ca.clicked.connect(self.reject)
+        btns.addStretch(); btns.addWidget(ok); btns.addWidget(ca)
+        lay.addLayout(btns)
+
+    def _save(self):
+        if not self.name.text().strip():
+            QMessageBox.warning(self, "Missing name", "Please enter a provider name.")
+            return
+        self._result = {"name": self.name.text().strip(),
+                        "key":  self.key.text().strip(),
+                        "base_url": self.url.text().strip(),
+                        "model": self.model.text().strip()}
+        self.accept()
+
+    @property
+    def result(self): return self._result
+
+
+# ── main dialog ───────────────────────────────────────────────────────────────
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumSize(580, 500)
+        self.setMinimumSize(600, 660)
         self._cfg = load_config()
         self._profiles = list(self._cfg.get("all_profiles", []))
         self._active_idx = self._cfg.get("active_profile_idx", 0)
+        self._custom = list(self._cfg.get("custom_providers", []))
         self._build()
 
-    # ------------------------------------------------------------------ build
-
     def _build(self):
-        tabs = QTabWidget()
-        tabs.addTab(self._tab_claude(), "Claude Profiles")
-        tabs.addTab(self._tab_backends(), "Other Backends")
-        tabs.addTab(self._tab_prefs(), "Preferences")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        bottom = QHBoxLayout()
+        root.addWidget(WaveHeaderWidget("Settings",
+                                        "AI backends  ·  custom providers  ·  preferences"))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        c = QWidget()
+        cl = QVBoxLayout(c)
+        cl.setContentsMargins(16, 14, 16, 14)
+        cl.setSpacing(14)
+
+        cl.addWidget(_lbl_section("AI Backends"))
+        cl.addWidget(self._build_claude())
+        cl.addWidget(self._build_groq())
+        cl.addWidget(self._build_ollama())
+
+        cl.addWidget(_lbl_section("Custom Providers"))
+        cl.addWidget(self._build_custom())
+
+        cl.addWidget(_lbl_section("Preferences"))
+        cl.addWidget(self._build_prefs())
+
+        cl.addStretch()
+        scroll.setWidget(c)
+        root.addWidget(scroll, 1)
+
+        bar = QWidget()
+        bar.setStyleSheet("background:#120E38; border-top:1px solid #2A2060;")
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(16, 10, 16, 10)
         save_btn = QPushButton("Save & Close")
         save_btn.setProperty("variant", "primary")
         save_btn.clicked.connect(self._on_save)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        bottom.addStretch()
-        bottom.addWidget(save_btn)
-        bottom.addWidget(cancel_btn)
+        bl.addStretch(); bl.addWidget(cancel_btn); bl.addWidget(save_btn)
+        root.addWidget(bar)
 
-        root = QVBoxLayout(self)
-        root.setSpacing(0)
-        root.addWidget(tabs)
-        root.addSpacing(8)
-        root.addLayout(bottom)
-        root.setContentsMargins(12, 12, 12, 12)
+    # ── Claude ────────────────────────────────────────────────────────────────
 
-    # --------------------------------------------------------------- Tab 1: Claude
+    def _build_claude(self) -> QGroupBox:
+        grp = QGroupBox("Claude  (Anthropic — paid, best accuracy)")
+        lay = QVBoxLayout(grp); lay.setSpacing(8)
 
-    def _tab_claude(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setSpacing(10)
-
-        hint = QLabel(
-            "Each profile stores a separate Anthropic API key. "
-            "You can switch between profiles at any time from the main window."
-        )
-        hint.setWordWrap(True)
-        hint.setProperty("role", "muted")
-        layout.addWidget(hint)
+        hint = QLabel("Multiple profiles let you switch between API keys without restarting.")
+        hint.setWordWrap(True); hint.setProperty("role", "muted")
+        lay.addWidget(hint)
 
         self._profile_list = QListWidget()
-        self._profile_list.setMinimumHeight(130)
-        self._refresh_profile_list()
-        layout.addWidget(self._profile_list)
+        self._profile_list.setMaximumHeight(115)
+        self._refresh_profiles()
+        lay.addWidget(self._profile_list)
 
-        btn_row = QHBoxLayout()
-        add_btn = QPushButton("＋ Add profile")
-        add_btn.clicked.connect(self._add_profile)
-        edit_btn = QPushButton("Edit")
-        edit_btn.clicked.connect(self._edit_profile)
-        del_btn = QPushButton("Delete")
-        del_btn.setProperty("variant", "danger")
-        del_btn.clicked.connect(self._delete_profile)
-        active_btn = QPushButton("Set as active")
-        active_btn.clicked.connect(self._set_active)
-        for b in (add_btn, edit_btn, del_btn, active_btn):
-            btn_row.addWidget(b)
-        layout.addLayout(btn_row)
-        layout.addStretch()
-        return w
+        br = QHBoxLayout()
+        add = QPushButton("+ Add profile"); add.clicked.connect(self._add_profile)
+        edit = QPushButton("Edit"); edit.clicked.connect(self._edit_profile)
+        delete = QPushButton("Delete"); delete.setProperty("variant", "danger")
+        delete.clicked.connect(self._delete_profile)
+        active_btn = QPushButton("Set active"); active_btn.clicked.connect(self._set_active)
+        for b in (add, edit, delete, active_btn): br.addWidget(b)
+        lay.addLayout(br)
 
-    def _refresh_profile_list(self):
+        link = QPushButton("Get or top up key  ->  console.anthropic.com")
+        link.setProperty("variant", "link")
+        link.clicked.connect(lambda: webbrowser.open("https://console.anthropic.com"))
+        lay.addWidget(link)
+        return grp
+
+    def _refresh_profiles(self):
         self._profile_list.clear()
         for i, p in enumerate(self._profiles):
-            marker = "  ✓ Active" if i == self._active_idx else ""
+            tick = "  [active]" if i == self._active_idx else ""
             self._profile_list.addItem(
-                f"{p.get('name', 'Unnamed')}   [{p.get('model', '')}]{marker}"
-            )
+                f"{p.get('name','Unnamed')}   {p.get('model','')} {tick}")
 
     def _add_profile(self):
-        dlg = _ProfileEditDialog(self)
+        dlg = _ProfileDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result:
             self._profiles.append(dlg.result)
-            if len(self._profiles) == 1:
-                self._active_idx = 0
-            self._refresh_profile_list()
+            if len(self._profiles) == 1: self._active_idx = 0
+            self._refresh_profiles()
 
     def _edit_profile(self):
-        idx = self._profile_list.currentRow()
-        if idx < 0:
-            return
-        dlg = _ProfileEditDialog(self, self._profiles[idx])
+        i = self._profile_list.currentRow()
+        if i < 0: return
+        dlg = _ProfileDialog(self, self._profiles[i])
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result:
-            self._profiles[idx] = dlg.result
-            self._refresh_profile_list()
+            self._profiles[i] = dlg.result; self._refresh_profiles()
 
     def _delete_profile(self):
-        idx = self._profile_list.currentRow()
-        if idx < 0:
-            return
-        if idx == self._active_idx and len(self._profiles) > 1:
-            QMessageBox.warning(
-                self, "Cannot delete",
-                "Set a different profile as active before deleting this one."
-            )
-            return
-        del self._profiles[idx]
+        i = self._profile_list.currentRow()
+        if i < 0: return
+        if i == self._active_idx and len(self._profiles) > 1:
+            QMessageBox.warning(self, "Cannot delete",
+                "Set another profile as active first."); return
+        del self._profiles[i]
         if self._active_idx >= len(self._profiles):
             self._active_idx = max(0, len(self._profiles) - 1)
-        self._refresh_profile_list()
+        self._refresh_profiles()
 
     def _set_active(self):
-        idx = self._profile_list.currentRow()
-        if idx < 0:
-            return
-        self._active_idx = idx
-        self._refresh_profile_list()
+        i = self._profile_list.currentRow()
+        if i >= 0: self._active_idx = i; self._refresh_profiles()
 
-    # --------------------------------------------------------------- Tab 2: Backends
+    # ── Groq ──────────────────────────────────────────────────────────────────
 
-    def _tab_backends(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setSpacing(14)
+    def _build_groq(self) -> QGroupBox:
+        grp = QGroupBox("Groq  (free cloud tier — fast, rate-limited)")
+        lay = QVBoxLayout(grp); lay.setSpacing(8)
 
-        # Groq group
-        groq_grp = QGroupBox("Groq (free cloud tier)")
-        groq_lay = QVBoxLayout(groq_grp)
-        groq_lay.setSpacing(8)
+        lay.addWidget(QLabel("API key:"))
+        row = QHBoxLayout()
+        self._groq_key = QLineEdit(self._cfg.get("GROQ_API_KEY", ""))
+        self._groq_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._groq_key.setPlaceholderText("gsk_...")
+        row.addWidget(self._groq_key)
+        show = QPushButton("Show"); show.setCheckable(True); show.setFixedWidth(52)
+        show.toggled.connect(lambda on: self._groq_key.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
+        row.addWidget(show)
+        lay.addLayout(row)
 
-        groq_lay.addWidget(QLabel("Groq API key:"))
-        key_row = QHBoxLayout()
-        self._groq_key_edit = QLineEdit()
-        self._groq_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._groq_key_edit.setPlaceholderText("gsk_...")
-        self._groq_key_edit.setText(self._cfg.get("GROQ_API_KEY", ""))
-        key_row.addWidget(self._groq_key_edit)
-        show_btn = QPushButton("Show")
-        show_btn.setCheckable(True)
-        show_btn.setFixedWidth(54)
-        show_btn.toggled.connect(
-            lambda on: self._groq_key_edit.setEchoMode(
-                QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password
-            )
-        )
-        key_row.addWidget(show_btn)
-        groq_lay.addLayout(key_row)
+        tr = QHBoxLayout()
+        tb = QPushButton("Test key"); tb.clicked.connect(self._test_groq)
+        self._groq_st = _status_lbl()
+        tr.addWidget(tb); tr.addWidget(self._groq_st, 1)
+        lay.addLayout(tr)
 
-        # Inline "Test key" feedback
-        test_row = QHBoxLayout()
-        test_btn = QPushButton("Test key")
-        test_btn.clicked.connect(self._test_groq_key)
-        self._groq_status = QLabel("")
-        test_row.addWidget(test_btn)
-        test_row.addWidget(self._groq_status, 1)
-        groq_lay.addLayout(test_row)
+        link = QPushButton("Get a free key  ->  console.groq.com")
+        link.setProperty("variant", "link")
+        link.clicked.connect(lambda: webbrowser.open("https://console.groq.com"))
+        lay.addWidget(link)
+        return grp
 
-        groq_link = QPushButton("Get a free key  →  console.groq.com")
-        groq_link.setProperty("variant", "link")
-        groq_link.clicked.connect(lambda: webbrowser.open("https://console.groq.com"))
-        groq_lay.addWidget(groq_link)
+    def _test_groq(self):
+        ok, msg = _test_groq(self._groq_key.text())
+        _apply_status(self._groq_st, ok, msg)
 
-        layout.addWidget(groq_grp)
+    # ── Ollama ────────────────────────────────────────────────────────────────
 
-        # Ollama group
-        ollama_grp = QGroupBox("Ollama (free, local, offline)")
-        ollama_lay = QVBoxLayout(ollama_grp)
-        ollama_lay.setSpacing(8)
+    def _build_ollama(self) -> QGroupBox:
+        grp = QGroupBox("Ollama  (free, local, offline fallback)")
+        lay = QVBoxLayout(grp); lay.setSpacing(8)
 
-        ollama_lay.addWidget(QLabel("Ollama base URL:"))
-        self._ollama_url_edit = QLineEdit()
-        self._ollama_url_edit.setText(self._cfg.get("OLLAMA_BASE_URL", "http://localhost:11434"))
-        ollama_lay.addWidget(self._ollama_url_edit)
+        lay.addWidget(QLabel("Base URL:"))
+        self._ollama_url = QLineEdit(self._cfg.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+        lay.addWidget(self._ollama_url)
 
-        test_ollama_row = QHBoxLayout()
-        test_ollama_btn = QPushButton("Test connection")
-        test_ollama_btn.clicked.connect(self._test_ollama)
-        self._ollama_status = QLabel("")
-        test_ollama_row.addWidget(test_ollama_btn)
-        test_ollama_row.addWidget(self._ollama_status, 1)
-        ollama_lay.addLayout(test_ollama_row)
+        tr = QHBoxLayout()
+        tb = QPushButton("Test connection"); tb.clicked.connect(self._test_ollama)
+        self._ollama_st = _status_lbl()
+        tr.addWidget(tb); tr.addWidget(self._ollama_st, 1)
+        lay.addLayout(tr)
 
-        ollama_link = QPushButton("Download Ollama  →  ollama.com")
-        ollama_link.setProperty("variant", "link")
-        ollama_link.clicked.connect(lambda: webbrowser.open("https://ollama.com"))
-        ollama_lay.addWidget(ollama_link)
-
-        layout.addWidget(ollama_grp)
-        layout.addStretch()
-        return w
-
-    def _test_groq_key(self):
-        ok, msg = test_groq_key(self._groq_key_edit.text())
-        self._groq_status.setText(msg)
-        self._groq_status.setProperty("role", "success" if ok else "danger")
-        self._groq_status.style().unpolish(self._groq_status)
-        self._groq_status.style().polish(self._groq_status)
+        link = QPushButton("Download Ollama  ->  ollama.com")
+        link.setProperty("variant", "link")
+        link.clicked.connect(lambda: webbrowser.open("https://ollama.com"))
+        lay.addWidget(link)
+        return grp
 
     def _test_ollama(self):
         import requests
-        url = self._ollama_url_edit.text().strip() or "http://localhost:11434"
+        url = self._ollama_url.text().strip() or "http://localhost:11434"
         try:
             r = requests.get(f"{url}/api/tags", timeout=3)
-            if r.status_code == 200:
-                self._ollama_status.setText("✓ Connected")
-                self._ollama_status.setProperty("role", "success")
-            else:
-                self._ollama_status.setText(f"✗ Status {r.status_code}")
-                self._ollama_status.setProperty("role", "danger")
-        except Exception as e:
-            self._ollama_status.setText(f"✗ Not reachable")
-            self._ollama_status.setProperty("role", "danger")
-        self._ollama_status.style().unpolish(self._ollama_status)
-        self._ollama_status.style().polish(self._ollama_status)
+            ok = r.status_code == 200
+            _apply_status(self._ollama_st, ok, "Connected" if ok else f"Status {r.status_code}")
+        except Exception:
+            _apply_status(self._ollama_st, False, "Not reachable")
 
-    # --------------------------------------------------------------- Tab 3: Prefs
+    # ── Custom providers ──────────────────────────────────────────────────────
 
-    def _tab_prefs(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setSpacing(14)
+    def _build_custom(self) -> QGroupBox:
+        grp = QGroupBox("Other providers  (any OpenAI-compatible API)")
+        lay = QVBoxLayout(grp); lay.setSpacing(8)
 
-        fmt_grp = QGroupBox("Default export format")
-        fmt_lay = QVBoxLayout(fmt_grp)
-        self._csv_radio = QRadioButton("CSV  (opens in Excel, Numbers, Google Sheets)")
-        self._excel_radio = QRadioButton("Excel (.xlsx)  (formatted with bold headers)")
+        note = QLabel(
+            "Add keys for OpenAI, Mistral, Together AI, local vLLM, etc. "
+            "Keys are saved to your .env file. Custom provider routing coming soon.")
+        note.setWordWrap(True); note.setProperty("role", "muted")
+        lay.addWidget(note)
+
+        self._custom_list = QListWidget()
+        self._custom_list.setMaximumHeight(100)
+        self._refresh_custom()
+        lay.addWidget(self._custom_list)
+
+        br = QHBoxLayout()
+        add = QPushButton("+ Add provider"); add.clicked.connect(self._add_custom)
+        edit = QPushButton("Edit"); edit.clicked.connect(self._edit_custom)
+        delete = QPushButton("Delete"); delete.setProperty("variant", "danger")
+        delete.clicked.connect(self._delete_custom)
+        for b in (add, edit, delete): br.addWidget(b)
+        br.addStretch()
+        lay.addLayout(br)
+        return grp
+
+    def _refresh_custom(self):
+        self._custom_list.clear()
+        for p in self._custom:
+            model = f"  [{p['model']}]" if p.get("model") else ""
+            self._custom_list.addItem(f"{p.get('name','?')}{model}")
+
+    def _add_custom(self):
+        dlg = _CustomDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result:
+            self._custom.append(dlg.result); self._refresh_custom()
+
+    def _edit_custom(self):
+        i = self._custom_list.currentRow()
+        if i < 0: return
+        dlg = _CustomDialog(self, self._custom[i])
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result:
+            self._custom[i] = dlg.result; self._refresh_custom()
+
+    def _delete_custom(self):
+        i = self._custom_list.currentRow()
+        if i >= 0: del self._custom[i]; self._refresh_custom()
+
+    # ── Preferences ───────────────────────────────────────────────────────────
+
+    def _build_prefs(self) -> QGroupBox:
+        grp = QGroupBox("Preferences")
+        lay = QVBoxLayout(grp); lay.setSpacing(10)
+
+        lay.addWidget(QLabel("Default export format:"))
+        fmt = QHBoxLayout()
+        self._csv_radio   = QRadioButton("CSV  (opens in Excel, Numbers, Sheets)")
+        self._excel_radio = QRadioButton("Excel (.xlsx)")
         if self._cfg.get("DEFAULT_OUTPUT", "csv") == "excel":
             self._excel_radio.setChecked(True)
         else:
             self._csv_radio.setChecked(True)
-        fmt_lay.addWidget(self._csv_radio)
-        fmt_lay.addWidget(self._excel_radio)
-        layout.addWidget(fmt_grp)
+        fmt.addWidget(self._csv_radio); fmt.addWidget(self._excel_radio); fmt.addStretch()
+        lay.addLayout(fmt)
 
-        res_grp = QGroupBox("Image max resolution before upload")
-        res_lay = QVBoxLayout(res_grp)
-        hint2 = QLabel(
-            "Lower = faster upload and less API cost. Higher = better accuracy "
-            "for very dense spreadsheets. 2000 px is a good default."
-        )
-        hint2.setWordWrap(True)
-        hint2.setProperty("role", "muted")
-        res_lay.addWidget(hint2)
+        lay.addWidget(_sep())
+
+        lay.addWidget(QLabel("Image max resolution before upload:"))
+        hint = QLabel("Lower = faster / cheaper.  Higher = better accuracy on dense tables.")
+        hint.setProperty("role", "muted")
+        lay.addWidget(hint)
         self._res_combo = QComboBox()
         self._res_combo.addItems(["1500", "2000", "2500"])
         idx = self._res_combo.findText(str(self._cfg.get("MAX_RESOLUTION", "2000")))
-        if idx >= 0:
-            self._res_combo.setCurrentIndex(idx)
-        res_lay.addWidget(self._res_combo)
-        layout.addWidget(res_grp)
+        if idx >= 0: self._res_combo.setCurrentIndex(idx)
+        lay.addWidget(self._res_combo)
 
-        misc_grp = QGroupBox("Scan behaviour")
-        misc_lay = QVBoxLayout(misc_grp)
-        self._auto_fallback_cb = QCheckBox(
-            "Auto-fallback — silently switch backends without asking (recommended)"
-        )
-        self._auto_fallback_cb.setChecked(self._cfg.get("AUTO_FALLBACK", True))
-        misc_lay.addWidget(self._auto_fallback_cb)
-        layout.addWidget(misc_grp)
+        lay.addWidget(_sep())
 
-        layout.addStretch()
-        return w
+        self._auto_fb = QCheckBox(
+            "Auto-fallback — silently switch backends on quota errors (recommended)")
+        self._auto_fb.setChecked(self._cfg.get("AUTO_FALLBACK", True))
+        lay.addWidget(self._auto_fb)
+        return grp
 
-    # ------------------------------------------------------------------ save
+    # ── save ──────────────────────────────────────────────────────────────────
 
     def _on_save(self):
         try:
             save_config(
                 claude_profiles=self._profiles,
                 active_claude_profile=self._active_idx,
-                groq_api_key=self._groq_key_edit.text(),
-                ollama_base_url=self._ollama_url_edit.text(),
+                groq_api_key=self._groq_key.text(),
+                ollama_base_url=self._ollama_url.text(),
                 default_output="excel" if self._excel_radio.isChecked() else "csv",
                 max_resolution=int(self._res_combo.currentText()),
-                auto_fallback=self._auto_fallback_cb.isChecked(),
+                auto_fallback=self._auto_fb.isChecked(),
+                custom_providers=self._custom,
             )
             self.accept()
         except Exception as e:
-            QMessageBox.critical(
-                self, "Save failed",
-                f"Could not save settings:\n{e}\n\n"
-                "Make sure the app folder is writable."
-            )
+            QMessageBox.critical(self, "Save failed",
+                f"Could not save settings:\n{e}\n\nMake sure the app folder is writable.")
