@@ -1,5 +1,6 @@
 import sys
 import os
+import subprocess
 from pathlib import Path
 
 # Guard for PyInstaller windowed mode — stdout/stderr are None when there's
@@ -8,6 +9,39 @@ if sys.stdout is None:
     sys.stdout = open(os.devnull, "w")
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
+
+
+def _set_windows_taskbar_icon():
+    """Set AppUserModelID so Windows shows our icon in the taskbar."""
+    try:
+        import ctypes
+        app_id = "ScanMe.SpreadsheetScanner.1.0"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
+
+
+def _rebuild_exe():
+    """Rebuild the exe via PyInstaller and exit."""
+    if getattr(sys, "frozen", False):
+        print("--build is only available when running from source (python main.py)")
+        sys.exit(1)
+    base = Path(__file__).resolve().parent
+    spec = base / "SpreadsheetScanner.spec"
+    if not spec.exists():
+        print("Error: SpreadsheetScanner.spec not found. Run from the project root.")
+        sys.exit(1)
+    print("Building SpreadsheetScanner.exe ...")
+    result = subprocess.run(
+        [sys.executable, "-m", "PyInstaller", str(spec), "--noconfirm"],
+        cwd=str(base),
+    )
+    if result.returncode == 0:
+        print("Build succeeded!  dist/SpreadsheetScanner.exe updated.")
+    else:
+        print("Build failed!")
+    sys.exit(result.returncode)
+
 
 try:
     from PyQt6.QtWidgets import QApplication
@@ -25,6 +59,11 @@ except ImportError as e:
 
 
 def main():
+    if "--build" in sys.argv or "--rebuild" in sys.argv:
+        _rebuild_exe()
+
+    _set_windows_taskbar_icon()
+
     # Must import paths AFTER guards above so it can write to stderr/stdout
     from core.paths import get_env_path, get_env_example_path, get_crash_log_path
     env_path = get_env_path()
@@ -51,10 +90,9 @@ def main():
         from ui.main_window import MainWindow
         window = MainWindow()
         window.show()
+        app.processEvents()
         sys.exit(app.exec())
     except Exception as exc:
-        # Write crash to log file so users can report it; also show a
-        # message box so the window doesn't just silently disappear.
         import traceback
         crash_text = traceback.format_exc()
         try:

@@ -11,7 +11,7 @@ from PyQt6.QtGui import (
     QAction, QDragEnterEvent, QDropEvent, QMouseEvent, QPixmap
 )
 from PyQt6.QtWidgets import (
-    QButtonGroup, QComboBox, QDialog, QFileDialog, QHBoxLayout,
+    QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QPushButton, QRadioButton,
     QSizePolicy, QSplitter, QStatusBar, QToolBar, QVBoxLayout, QWidget,
     QFrame
@@ -138,6 +138,14 @@ class _DropPanel(QLabel):
             self._main_win._on_load_file()
 
 
+# ── combo item kinds ──────────────────────────────────────────────────────────
+# Each entry stored as itemData is a dict:
+#   {"kind": "claude", "index": <int>}   — Claude profile at all_profiles[index]
+#   {"kind": "groq"}                      — Groq cloud backend
+#   {"kind": "ollama"}                    — Local Ollama backend
+#   {"kind": "none"}                      — Placeholder when nothing is set up
+
+
 # ── main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -154,48 +162,72 @@ class MainWindow(QMainWindow):
         self._selected_pdf_page   = 0
         self._extracted_data      = None
         self._worker              = None
+        self._ollama_running = None
+        self._ollama_model_ready = None
 
         self._build_ui()
         self._refresh_config()
-        self._refresh_profile_combo()
+        self._refresh_backend_combo()
         self._update_status_bar()
-        QTimer.singleShot(0, self._check_backends_on_startup)
+        # Defer backend checks so the UI appears immediately
+        QTimer.singleShot(0, self._check_backends_startup)
 
     # ── config ────────────────────────────────────────────────────────────────
 
     def _refresh_config(self):
         self._config = load_config()
 
-    def _update_status_bar(self):
+    def _get_backend_label(self) -> str:
+        """Return a short human-readable label for the currently active backend."""
         cfg = self._config
         profile = cfg.get("active_profile")
         if profile and profile.get("key"):
-            self.statusBar().showMessage(
-                f"Backend: Claude — {profile.get('name', '?')}")
-        elif cfg.get("GROQ_API_KEY"):
-            self.statusBar().showMessage("Backend: Groq (free tier)")
-        else:
-            self.statusBar().showMessage("Backend: None configured")
-        QTimer.singleShot(0, self._refresh_backend_status)
+            return f"Backend: Claude — {profile.get('name', '?')}  [{profile.get('model', '')}]"
+        if cfg.get("GROQ_API_KEY"):
+            return "Backend: Groq (free tier)"
+        or_ = self._ollama_running
+        omr = self._ollama_model_ready
+        if or_ is None:
+            return "Backend: Checking..."
+        if or_ and omr:
+            return "Backend: Ollama — ready"
+        if or_:
+            return "Backend: Ollama — model not pulled"
+        return "Backend: None configured"
 
-    def _refresh_backend_status(self):
-        url = self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        if is_ollama_running(url):
-            ok = check_model_available(url)
-            self.statusBar().showMessage(
-                "Backend: Ollama — ready" if ok
-                else "Backend: Ollama — model not pulled")
+    def _update_status_bar(self):
+        self.statusBar().showMessage(self._get_backend_label())
 
-    def _check_backends_on_startup(self):
+    def _check_backends_startup(self):
+        """Non-blocking startup check — runs ollama check in background."""
+        ollama_url = self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        def _do_check():
+            try:
+                running = is_ollama_running(ollama_url)
+                ready = check_model_available(ollama_url) if running else False
+                self._ollama_running = running
+                self._ollama_model_ready = ready
+            except Exception:
+                self._ollama_running = False
+                self._ollama_model_ready = False
+            QTimer.singleShot(0, self._on_backend_check_done)
+
+        threading.Thread(target=_do_check, daemon=True).start()
+
+    def _on_backend_check_done(self):
+        self._refresh_backend_combo()
+        self._update_status_bar()
+
         profile = self._config.get("active_profile")
         groq_key = self._config.get("GROQ_API_KEY")
-        if (profile and profile.get("key")) or groq_key:
-            return
-        QTimer.singleShot(0, self._run_backend_wizard)
+        api_keys_exist = (profile and profile.get("key")) or groq_key
 
-    def _run_backend_wizard(self):
-        url = self._config.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        if is_ollama_running(url):
+        if not api_keys_exist and not (self._ollama_running or False):
+            self._run_backend_wizard(ollama_running=False)
+
+    def _run_backend_wizard(self, ollama_running=False):
+        if ollama_running:
             return
         dlg = FirstRunWizard(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.should_proceed:
@@ -211,6 +243,7 @@ class MainWindow(QMainWindow):
                     custom_providers=self._config.get("custom_providers", []),
                 )
             self._refresh_config()
+            self._refresh_backend_combo()
             self._update_status_bar()
             if dlg.should_open_settings:
                 self._on_settings()
@@ -245,7 +278,7 @@ class MainWindow(QMainWindow):
         )
         root.addWidget(self._wave)
 
-        # Profile selector row (sits below wave header)
+        # ── Backend / profile selector row ────────────────────────────────────
         profile_bar = QWidget()
         profile_bar.setStyleSheet(
             "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
@@ -254,13 +287,15 @@ class MainWindow(QMainWindow):
         )
         pb_lay = QHBoxLayout(profile_bar)
         pb_lay.setContentsMargins(14, 7, 14, 7)
-        lbl = QLabel("Active Claude profile:")
+
+        lbl = QLabel("Active backend / profile:")
         lbl.setProperty("role", "muted")
         pb_lay.addWidget(lbl)
-        self._profile_combo = QComboBox()
-        self._profile_combo.setMinimumWidth(240)
-        self._profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        pb_lay.addWidget(self._profile_combo)
+
+        self._backend_combo = QComboBox()
+        self._backend_combo.setMinimumWidth(300)
+        self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        pb_lay.addWidget(self._backend_combo)
         pb_lay.addStretch()
         root.addWidget(profile_bar)
 
@@ -333,29 +368,142 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
 
-    # ── profile combo ─────────────────────────────────────────────────────────
+    # ── unified backend combo ─────────────────────────────────────────────────
 
-    def _refresh_profile_combo(self):
-        self._profile_combo.blockSignals(True)
-        self._profile_combo.clear()
-        profiles   = self._config.get("all_profiles", [])
-        active_idx = self._config.get("active_profile_idx", 0)
+    def _refresh_backend_combo(self):
+        """
+        Rebuild the combo with every available backend source:
+
+          ▸ One entry per Claude profile  (kind="claude", index=N)
+          ▸ Groq entry if a key is saved  (kind="groq")
+          ▸ Ollama entry if detectable    (kind="ollama")
+          ▸ Fallback placeholder          (kind="none")  when nothing is set up
+
+        The [active] tag is shown only on the item that matches the
+        currently-active backend so the dropdown never looks duplicated.
+        """
+        self._backend_combo.blockSignals(True)
+        self._backend_combo.clear()
+
+        cfg = self._config
+        profiles     = cfg.get("all_profiles", [])
+        active_idx   = cfg.get("active_profile_idx", 0)
+        active_prof  = cfg.get("active_profile")          # None if no profiles
+        groq_key     = cfg.get("GROQ_API_KEY", "")
+        ollama_url   = cfg.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        # Determine which backend is actually in use right now so we can
+        # attach [active] to exactly one item.
+        if active_prof and active_prof.get("key"):
+            active_kind  = "claude"
+            active_cidx  = active_idx
+        elif groq_key:
+            active_kind  = "groq"
+            active_cidx  = -1
+        else:
+            # Ollama (running or not) is the last resort
+            active_kind  = "ollama"
+            active_cidx  = -1
+
+        combo_select = 0   # which row to leave selected after building
+
+        # ── Claude profiles ──────────────────────────────────────────────────
         for i, p in enumerate(profiles):
-            tick = "  [active]" if i == active_idx else ""
-            self._profile_combo.addItem(
-                f"{p.get('name','Unnamed')}  [{p.get('model','')}]{tick}", i)
-        if not profiles:
-            self._profile_combo.addItem("No Claude profiles — add one in Settings", -1)
-        self._profile_combo.setCurrentIndex(
-            active_idx if 0 <= active_idx < len(profiles) else 0)
-        self._profile_combo.blockSignals(False)
+            name  = p.get("name", "Unnamed")
+            model = p.get("model", "")
+            has_key = bool(p.get("key", "").strip())
 
-    def _on_profile_changed(self, idx):
-        data = self._profile_combo.itemData(idx)
-        if data is not None and data >= 0:
-            set_active_profile(data)
-            self._refresh_config()
-            self._refresh_profile_combo()
+            if active_kind == "claude" and i == active_cidx:
+                tag = "  [active]"
+            else:
+                tag = ""
+
+            # Dim entries that have no key configured
+            unavailable = "  ⚠ no key" if not has_key else ""
+            label = f"Claude — {name}  [{model}]{tag}{unavailable}"
+
+            self._backend_combo.addItem(label, {"kind": "claude", "index": i})
+
+            if active_kind == "claude" and i == active_cidx:
+                combo_select = self._backend_combo.count() - 1
+
+        # ── Groq ─────────────────────────────────────────────────────────────
+        if groq_key:
+            tag   = "  [active]" if active_kind == "groq" else ""
+            label = f"Groq — free cloud tier{tag}"
+        else:
+            label = "Groq — no key configured  ⚠"
+        self._backend_combo.addItem(label, {"kind": "groq"})
+        if active_kind == "groq":
+            combo_select = self._backend_combo.count() - 1
+
+        # ── Ollama (uses cached status to avoid blocking) ───────────────────
+        or_ = self._ollama_running
+        omr = self._ollama_model_ready
+        if or_ is None:
+            ol_status = "checking..."
+        elif or_ and omr:
+            ol_status = "ready"
+        elif or_:
+            ol_status = "running — model not pulled"
+        else:
+            ol_status = "not running"
+        tag   = "  [active]" if active_kind == "ollama" else ""
+        label = f"Ollama — local  ({ol_status}){tag}"
+        self._backend_combo.addItem(label, {"kind": "ollama"})
+        if active_kind == "ollama":
+            combo_select = self._backend_combo.count() - 1
+
+        # ── Nothing set up at all ────────────────────────────────────────────
+        has_ollama = bool(or_)
+        if not profiles and not groq_key and not has_ollama:
+            self._backend_combo.insertItem(
+                0, "No backends configured — open Settings", {"kind": "none"})
+            combo_select = 0
+
+        self._backend_combo.setCurrentIndex(combo_select)
+        self._backend_combo.blockSignals(False)
+
+    def _on_backend_changed(self, idx: int):
+        """
+        Handle the user picking a different item in the unified combo.
+
+        - Selecting a Claude profile with a key → make it the active Claude
+          profile (writes to .env), reload config, refresh combo + status bar.
+        - Selecting a Claude profile without a key → warn and revert.
+        - Selecting Groq / Ollama → informational only (the backend priority
+          logic in extractor.py already follows key availability order).
+        """
+        data = self._backend_combo.itemData(idx)
+        if not isinstance(data, dict):
+            return
+
+        kind = data.get("kind")
+
+        if kind == "claude":
+            cidx = data.get("index", 0)
+            profiles = self._config.get("all_profiles", [])
+            if 0 <= cidx < len(profiles):
+                profile = profiles[cidx]
+                if not profile.get("key", "").strip():
+                    QMessageBox.information(
+                        self, "No API key",
+                        f"The profile \"{profile.get('name', '?')}\" has no API key.\n\n"
+                        "Open Settings → Claude to add a key."
+                    )
+                    # Revert the combo to whichever item was [active] before
+                    self._refresh_backend_combo()
+                    return
+                set_active_profile(cidx)
+                self._refresh_config()
+                self._refresh_backend_combo()
+                self._update_status_bar()
+
+        elif kind in ("groq", "ollama", "none"):
+            # These are not user-switchable from this combo (keys / Ollama
+            # config live in Settings); just refresh the display so the
+            # combo shows accurate live state.
+            self._refresh_backend_combo()
             self._update_status_bar()
 
     # ── file loading ──────────────────────────────────────────────────────────
@@ -375,6 +523,8 @@ class MainWindow(QMainWindow):
 
         if suffix == ".pdf":
             try:
+                self._set_status("Converting PDF pages...")
+                QApplication.processEvents()
                 self._pdf_pages = pdf_to_images(p.read_bytes())
                 if not self._pdf_pages:
                     QMessageBox.warning(self, "PDF Error", "No pages could be extracted.")
@@ -454,6 +604,7 @@ class MainWindow(QMainWindow):
 
         self._scan_btn.setEnabled(False)
         self._set_status("Pre-processing image...")
+        QApplication.processEvents()
 
         max_px = cfg.get("MAX_RESOLUTION", 2000)
         processed, media_type = preprocess_image(self._current_image_bytes, max_px)
@@ -519,7 +670,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._refresh_config()
-            self._refresh_profile_combo()
+            self._refresh_backend_combo()
             self._update_status_bar()
 
     # ── helpers ───────────────────────────────────────────────────────────────

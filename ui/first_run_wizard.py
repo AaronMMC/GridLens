@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QGroupBox, QFrame
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from core.backends.ollama_backend import (
     is_ollama_running, check_model_available,
@@ -114,13 +114,15 @@ class FirstRunWizard(QDialog):
         def pull():
             try:
                 pull_model()
-                self._ol_status.setText("Downloaded successfully!")
-                self._ol_status.setProperty("role", "success")
+                QTimer.singleShot(0, lambda: self._set_dl_status("Downloaded successfully!", "success"))
             except Exception as e:
-                self._ol_status.setText(f"Download failed: {e}")
-                self._ol_status.setProperty("role", "danger")
-            self._ol_status.style().unpolish(self._ol_status); self._ol_status.style().polish(self._ol_status)
+                QTimer.singleShot(0, lambda e=e: self._set_dl_status(f"Download failed: {e}", "danger"))
         threading.Thread(target=pull, daemon=True).start()
+
+    def _set_dl_status(self, text, role):
+        self._ol_status.setText(text)
+        self._ol_status.setProperty("role", role)
+        self._ol_status.style().unpolish(self._ol_status); self._ol_status.style().polish(self._ol_status)
 
     def _on_skip_pull(self):
         self._ol_status.setText("Skipped — pull the model later from Settings.")
