@@ -26,6 +26,7 @@ from core.hardware_check import check_ollama_requirements
 
 from ui.preview_widget import PreviewWidget
 from ui.settings_dialog import SettingsDialog
+from ui.about_dialog import AboutDialog
 from ui.ollama_warning_dialog import OllamaWarningDialog
 from ui.quota_prompt_dialog import QuotaPromptDialog
 from ui.quota_prompt_dialog import QuotaPromptDialog
@@ -243,6 +244,12 @@ class MainWindow(QMainWindow):
         settings_act = QAction("Settings", self)
         settings_act.triggered.connect(self._on_settings)
         tb.addAction(settings_act)
+        
+        tb.addSeparator()
+        
+        about_act = QAction("About", self)
+        about_act.triggered.connect(self._on_about)
+        tb.addAction(about_act)
 
         # Animated wave header
         self._wave = WaveHeaderWidget(
@@ -659,6 +666,10 @@ class MainWindow(QMainWindow):
             self._refresh_config()
             self._refresh_backend_combo()
             self._update_status_bar()
+
+    def _on_about(self):
+        dlg = AboutDialog(self)
+        dlg.exec()
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

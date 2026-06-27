@@ -40,9 +40,9 @@ QMainWindow, QDialog {{
 QGroupBox {{
     background-color: {DARK_PRP};
     border: 1px solid {BORDER};
-    border-radius: 10px;
-    margin-top: 16px;
-    padding: 16px 14px 14px 14px;
+    border-radius: 12px;
+    margin-top: 20px;
+    padding: 20px 16px 16px 16px;
     font-weight: 600;
     color: {TEXT};
 }}
@@ -78,9 +78,10 @@ QLabel[role="section"] {{
 QPushButton {{
     background-color: {MID_PRP};
     border: 1px solid {BORDER};
-    border-radius: 8px;
-    padding: 7px 16px;
+    border-radius: 6px;
+    padding: 8px 18px;
     color: {TEXT};
+    font-weight: 600;
 }}
 QPushButton:hover {{
     background-color: #261C60;
@@ -130,13 +131,13 @@ QPushButton[variant="danger"]:hover {{ border-color: {DANGER}; }}
 QLineEdit, QTextEdit {{
     background-color: {NAVY};
     border: 1px solid {BORDER};
-    border-radius: 7px;
-    padding: 7px 10px;
+    border-radius: 6px;
+    padding: 8px 12px;
     color: {TEXT};
     selection-background-color: {PURPLE};
 }}
 QLineEdit:focus, QTextEdit:focus {{
-    border-color: {PURPLE};
+    border-color: {PURPLE_BR};
     background-color: #0F0F30;
 }}
 QLineEdit::placeholder {{ color: {MUTED}; }}
@@ -144,8 +145,8 @@ QLineEdit::placeholder {{ color: {MUTED}; }}
 QComboBox {{
     background-color: {NAVY};
     border: 1px solid {BORDER};
-    border-radius: 7px;
-    padding: 7px 10px;
+    border-radius: 6px;
+    padding: 8px 12px;
     color: {TEXT};
 }}
 QComboBox:focus {{ border-color: {PURPLE}; }}
