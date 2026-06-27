@@ -13,7 +13,7 @@ SYSTEM_PROMPT = (
     'assumptions. For cells that are genuinely unreadable, use "?".'
 )
 
-USER_PROMPT = (
+USER_PROMPT_BASE = (
     "Examine the spreadsheet in the image carefully.\n\n"
     "Rules:\n"
     "1. Extract every row and column EXACTLY as written — one-to-one with the physical table.\n"
@@ -24,10 +24,32 @@ USER_PROMPT = (
     "4. For merged or spanned cells, repeat the value in each logical cell it covers.\n"
     '5. For empty cells, use an empty string "".\n'
     '6. For unreadable cells, use "?".\n'
-    "7. Return ONLY valid JSON. No markdown fences, no explanation, no preamble.\n\n"
-    "JSON format:\n"
+    "7. Return ONLY valid JSON. No markdown fences, no explanation, no preamble.\n"
+)
+
+USER_PROMPT_JSON_FMT = (
+    "\nJSON format:\n"
     '{\n  "headers": ["Column1", "Column2", ...],\n  "rows": [\n    ["value", "value", ...],\n    ...\n  ]\n}'
 )
+
+
+def build_user_prompt(schema: str = "") -> str:
+    """Build the user prompt, optionally injecting a custom column schema.
+
+    If *schema* is non-empty (e.g. "Date, Vendor, Amount"), an additional
+    rule is appended that forces the AI to use exactly those columns.
+    """
+    prompt = USER_PROMPT_BASE
+    if schema.strip():
+        prompt += (
+            f"8. IMPORTANT: You MUST use exactly these column headers in this "
+            f"exact order: [{schema.strip()}]. Map the data from the image into "
+            f"these columns. If a column has no corresponding data in the image, "
+            f"fill it with empty strings.\n"
+        )
+    prompt += USER_PROMPT_JSON_FMT
+    return prompt
+
 
 
 def get_available_backend(config: dict) -> str:
@@ -59,13 +81,17 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
             "or install Ollama from https://ollama.com"
         )
 
+    # Build the user prompt — inject custom column schema if configured
+    schema = config.get("CUSTOM_SCHEMA", "")
+    user_prompt = build_user_prompt(schema)
+
     # --- Backend 1: active Claude profile ---
     if profile and profile.get("key"):
         try:
             if status_cb:
                 status_cb(f"Scanning with Claude ({profile['name']})...")
             return claude_backend.run(
-                image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+                image_bytes, media_type, SYSTEM_PROMPT, user_prompt,
                 profile["key"], profile["model"]
             )
         except QuotaExhaustedError:
@@ -79,7 +105,7 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
                     if status_cb:
                         status_cb(f"Retrying with {alt['name']}...")
                     return claude_backend.run(
-                        image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+                        image_bytes, media_type, SYSTEM_PROMPT, user_prompt,
                         alt["key"], alt["model"]
                     )
                 # choice == "next" -> fall through to Gemini/Groq
@@ -90,7 +116,7 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
             if status_cb:
                 status_cb("Scanning with Gemini (free tier)...")
             return gemini_backend.run(
-                image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+                image_bytes, media_type, SYSTEM_PROMPT, user_prompt,
                 gemini_key
             )
         except Exception:
@@ -102,7 +128,7 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
             if status_cb:
                 status_cb("Falling back to Groq (free tier)...")
             return groq_backend.run(
-                image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+                image_bytes, media_type, SYSTEM_PROMPT, user_prompt,
                 groq_key
             )
         except QuotaExhaustedError:
@@ -139,8 +165,8 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
         status_cb("Scanning with local Ollama (this can take several minutes)...")
     try:
         return ollama_backend.run(
-            image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+            image_bytes, media_type, SYSTEM_PROMPT, user_prompt,
             ollama_url
         )
     except OllamaNotRunningError as e:
-        raise RuntimeError(str(e)) from e
+        raise RuntimeError(str(e)) from e

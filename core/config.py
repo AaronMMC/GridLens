@@ -60,6 +60,7 @@ def load_config() -> dict:
         "DEFAULT_OUTPUT":     os.getenv("DEFAULT_OUTPUT", "csv"),
         "MAX_RESOLUTION":     max_res,
         "AUTO_FALLBACK":      os.getenv("AUTO_FALLBACK", "true").lower() == "true",
+        "CUSTOM_SCHEMA":      os.getenv("CUSTOM_SCHEMA", ""),
         "custom_providers":   custom,
     }
 
@@ -79,6 +80,7 @@ def save_config(
     default_output: str,
     max_resolution: int,
     auto_fallback: bool,
+    custom_schema: str,
     custom_providers: list = None,
 ) -> None:
     env_path = get_env_path()
@@ -91,7 +93,8 @@ def save_config(
     set_key(s, "OLLAMA_BASE_URL",       ollama_base_url.strip() or "http://localhost:11434")
     set_key(s, "DEFAULT_OUTPUT",        default_output)
     set_key(s, "MAX_RESOLUTION",        str(max_resolution))
-    set_key(s, "AUTO_FALLBACK",         "true" if auto_fallback else "false")
+    set_key(s, "AUTO_FALLBACK",         str(auto_fallback).lower())
+    set_key(s, "CUSTOM_SCHEMA",         custom_schema)
     set_key(s, "CUSTOM_PROVIDERS",      json.dumps(custom_providers or []))
     load_dotenv(s, override=True)
 

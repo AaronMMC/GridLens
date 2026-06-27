@@ -481,6 +481,16 @@ class SettingsDialog(QDialog):
 
         lay.addWidget(_sep())
 
+        lay.addWidget(QLabel("Custom Column Schema (Optional):"))
+        hint_schema = QLabel("Force the AI to output these exact columns. Comma-separated (e.g. Date, Vendor, Amount)")
+        hint_schema.setProperty("role", "muted")
+        lay.addWidget(hint_schema)
+        self._schema_input = QLineEdit(self._cfg.get("CUSTOM_SCHEMA", ""))
+        self._schema_input.setPlaceholderText("Leave empty to let AI decide")
+        lay.addWidget(self._schema_input)
+
+        lay.addWidget(_sep())
+
         lay.addWidget(QLabel("Image max resolution before upload:"))
         hint = QLabel("Lower = faster / cheaper.  Higher = better accuracy on dense tables.")
         hint.setProperty("role", "muted")
@@ -512,6 +522,7 @@ class SettingsDialog(QDialog):
                 default_output="excel" if self._excel_radio.isChecked() else "csv",
                 max_resolution=int(self._res_combo.currentText()),
                 auto_fallback=self._auto_fb.isChecked(),
+                custom_schema=self._schema_input.text().strip(),
                 custom_providers=self._custom,
             )
             self.accept()

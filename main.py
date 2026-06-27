@@ -107,6 +107,7 @@ def main():
                     default_output=cfg.get("DEFAULT_OUTPUT", "csv"),
                     max_resolution=cfg.get("MAX_RESOLUTION", 2000),
                     auto_fallback=cfg.get("AUTO_FALLBACK", True),
+                    custom_schema=cfg.get("CUSTOM_SCHEMA", ""),
                     custom_providers=cfg.get("custom_providers", []),
                 )
 

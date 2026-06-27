@@ -27,8 +27,10 @@ from core.hardware_check import check_ollama_requirements
 from ui.preview_widget import PreviewWidget
 from ui.settings_dialog import SettingsDialog
 from ui.about_dialog import AboutDialog
+from ui.help_dialog import HelpDialog
+from ui.crop_dialog import CropDialog
+from ui.batch_dialog import BatchDialog
 from ui.ollama_warning_dialog import OllamaWarningDialog
-from ui.quota_prompt_dialog import QuotaPromptDialog
 from ui.quota_prompt_dialog import QuotaPromptDialog
 from ui.animated_widgets import WaveHeaderWidget, PulseButton
 from ui.theme import PURPLE, BLUE_BR
@@ -240,10 +242,23 @@ class MainWindow(QMainWindow):
         load_act = QAction("Load File", self)
         load_act.triggered.connect(self._on_load_file)
         tb.addAction(load_act)
+        
+        tb.addSeparator()
+        
+        batch_act = QAction("Batch Process", self)
+        batch_act.triggered.connect(self._on_batch)
+        tb.addAction(batch_act)
+        
         tb.addSeparator()
         settings_act = QAction("Settings", self)
         settings_act.triggered.connect(self._on_settings)
         tb.addAction(settings_act)
+        
+        tb.addSeparator()
+        
+        help_act = QAction("Help / Manual", self)
+        help_act.triggered.connect(self._on_help)
+        tb.addAction(help_act)
         
         tb.addSeparator()
         
@@ -306,6 +321,13 @@ class MainWindow(QMainWindow):
 
         # Scan row — PulseButton replaces plain QPushButton
         scan_row = QHBoxLayout()
+        
+        self._crop_btn = QPushButton("Crop")
+        self._crop_btn.setEnabled(False)
+        self._crop_btn.setToolTip("Crop the image before scanning to improve accuracy")
+        self._crop_btn.clicked.connect(self._on_crop)
+        scan_row.addWidget(self._crop_btn)
+        
         self._scan_btn = PulseButton("Scan / Extract")
         self._scan_btn.setProperty("variant", "primary")
         self._scan_btn.setMinimumHeight(38)
@@ -336,6 +358,12 @@ class MainWindow(QMainWindow):
         exp_row.addWidget(self._csv_radio)
         exp_row.addWidget(self._excel_radio)
         exp_row.addStretch()
+        
+        self._copy_btn = QPushButton("Copy (TSV)")
+        self._copy_btn.setEnabled(False)
+        self._copy_btn.clicked.connect(self._on_copy_clipboard)
+        exp_row.addWidget(self._copy_btn)
+        
         self._save_btn = QPushButton("Save File")
         self._save_btn.setEnabled(False)
         self._save_btn.clicked.connect(self._on_save)
@@ -536,6 +564,7 @@ class MainWindow(QMainWindow):
             self._drop_panel.load_pixmap(QPixmap(str(p)))
             self._page_strip_widget.hide()
             self._scan_btn.setEnabled(True)
+            self._crop_btn.setEnabled(True)
             self._set_status("Image loaded — click Scan / Extract to begin")
         else:
             QMessageBox.warning(self, "Unsupported format",
@@ -549,6 +578,7 @@ class MainWindow(QMainWindow):
             px = QPixmap(); px.loadFromData(self._current_image_bytes)
             self._drop_panel.load_pixmap(px)
             self._scan_btn.setEnabled(True)
+            self._crop_btn.setEnabled(True)
 
     def _show_page_strip(self):
         while self._page_strip_layout.count():
@@ -633,6 +663,7 @@ class MainWindow(QMainWindow):
         self._set_status(f"Done — {rows} rows x {cols} columns extracted")
         self.statusBar().showMessage(self._get_backend_label())
         self._scan_btn.setEnabled(True)
+        self._copy_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
 
     def _on_error(self, msg):
@@ -641,7 +672,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self._get_backend_label())
         QMessageBox.critical(self, "Extraction failed", msg)
 
-    # ── save ──────────────────────────────────────────────────────────────────
+    # ── save & copy ───────────────────────────────────────────────────────────
+
+    def _on_copy_clipboard(self):
+        data = self._preview.get_data()
+        if not data.get("headers") and not data.get("rows"): return
+        
+        lines = []
+        if data["headers"]:
+            lines.append("\t".join(data["headers"]))
+        for row in data.get("rows", []):
+            lines.append("\t".join(str(cell).replace('\t', ' ').replace('\n', ' ') for cell in row))
+            
+        tsv_text = "\n".join(lines)
+        QApplication.clipboard().setText(tsv_text)
+        self.statusBar().showMessage("Copied to clipboard! Ready to paste into Excel/Sheets.")
 
     def _on_save(self):
         data = self._preview.get_data()
@@ -667,8 +712,37 @@ class MainWindow(QMainWindow):
             self._refresh_backend_combo()
             self._update_status_bar()
 
+    def _on_help(self):
+        dlg = HelpDialog(self)
+        dlg.exec()
+
     def _on_about(self):
         dlg = AboutDialog(self)
+        dlg.exec()
+
+    def _on_crop(self):
+        """Open the crop dialog so the user can isolate the table region."""
+        if not self._current_image_bytes:
+            return
+        try:
+            dlg = CropDialog(self._current_image_bytes, self)
+        except ValueError as e:
+            QMessageBox.critical(self, "Crop failed", str(e))
+            return
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            cropped = dlg.get_cropped_bytes()
+            if cropped:
+                self._current_image_bytes = cropped
+                self._current_media_type = "image/jpeg"
+                px = QPixmap()
+                px.loadFromData(cropped)
+                self._drop_panel.load_pixmap(px)
+                self._set_status("Image cropped — click Scan / Extract to begin")
+
+    def _on_batch(self):
+        """Open the batch processing dialog."""
+        self._refresh_config()
+        dlg = BatchDialog(self._config, self)
         dlg.exec()
 
     # ── helpers ───────────────────────────────────────────────────────────────
