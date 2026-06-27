@@ -28,7 +28,7 @@ from ui.preview_widget import PreviewWidget
 from ui.settings_dialog import SettingsDialog
 from ui.ollama_warning_dialog import OllamaWarningDialog
 from ui.quota_prompt_dialog import QuotaPromptDialog
-from ui.first_run_wizard import FirstRunWizard
+from ui.quota_prompt_dialog import QuotaPromptDialog
 from ui.animated_widgets import WaveHeaderWidget, PulseButton
 from ui.theme import PURPLE, BLUE_BR
 
@@ -151,7 +151,7 @@ class _DropPanel(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SpreadsheetScanner")
+        self.setWindowTitle("GridLens")
         self.setMinimumSize(940, 680)
         self.setAcceptDrops(True)
 
@@ -183,6 +183,8 @@ class MainWindow(QMainWindow):
         profile = cfg.get("active_profile")
         if profile and profile.get("key"):
             return f"Backend: Claude — {profile.get('name', '?')}  [{profile.get('model', '')}]"
+        if cfg.get("GEMINI_API_KEY"):
+            return "Backend: Gemini (free tier)"
         if cfg.get("GROQ_API_KEY"):
             return "Backend: Groq (free tier)"
         or_ = self._ollama_running
@@ -219,35 +221,6 @@ class MainWindow(QMainWindow):
         self._refresh_backend_combo()
         self._update_status_bar()
 
-        profile = self._config.get("active_profile")
-        groq_key = self._config.get("GROQ_API_KEY")
-        api_keys_exist = (profile and profile.get("key")) or groq_key
-
-        if not api_keys_exist and not (self._ollama_running or False):
-            self._run_backend_wizard(ollama_running=False)
-
-    def _run_backend_wizard(self, ollama_running=False):
-        if ollama_running:
-            return
-        dlg = FirstRunWizard(self)
-        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.should_proceed:
-            if dlg.groq_key:
-                save_config(
-                    claude_profiles=self._config.get("all_profiles", []),
-                    active_claude_profile=self._config.get("active_profile_idx", 0),
-                    groq_api_key=dlg.groq_key,
-                    ollama_base_url=self._config.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-                    default_output=self._config.get("DEFAULT_OUTPUT", "csv"),
-                    max_resolution=self._config.get("MAX_RESOLUTION", 2000),
-                    auto_fallback=self._config.get("AUTO_FALLBACK", True),
-                    custom_providers=self._config.get("custom_providers", []),
-                )
-            self._refresh_config()
-            self._refresh_backend_combo()
-            self._update_status_bar()
-            if dlg.should_open_settings:
-                self._on_settings()
-
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -273,7 +246,7 @@ class MainWindow(QMainWindow):
 
         # Animated wave header
         self._wave = WaveHeaderWidget(
-            "SpreadsheetScanner",
+            "GridLens",
             "AI-powered table extraction from photos and PDFs"
         )
         root.addWidget(self._wave)
@@ -389,6 +362,7 @@ class MainWindow(QMainWindow):
         profiles     = cfg.get("all_profiles", [])
         active_idx   = cfg.get("active_profile_idx", 0)
         active_prof  = cfg.get("active_profile")          # None if no profiles
+        gemini_key   = cfg.get("GEMINI_API_KEY", "")
         groq_key     = cfg.get("GROQ_API_KEY", "")
         ollama_url   = cfg.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -397,6 +371,9 @@ class MainWindow(QMainWindow):
         if active_prof and active_prof.get("key"):
             active_kind  = "claude"
             active_cidx  = active_idx
+        elif gemini_key:
+            active_kind  = "gemini"
+            active_cidx  = -1
         elif groq_key:
             active_kind  = "groq"
             active_cidx  = -1
@@ -427,6 +404,16 @@ class MainWindow(QMainWindow):
             if active_kind == "claude" and i == active_cidx:
                 combo_select = self._backend_combo.count() - 1
 
+        # ── Gemini ───────────────────────────────────────────────────────────
+        if gemini_key:
+            tag   = "  [active]" if active_kind == "gemini" else ""
+            label = f"Gemini — free cloud tier{tag}"
+        else:
+            label = "Gemini — no key configured  ⚠"
+        self._backend_combo.addItem(label, {"kind": "gemini"})
+        if active_kind == "gemini":
+            combo_select = self._backend_combo.count() - 1
+
         # ── Groq ─────────────────────────────────────────────────────────────
         if groq_key:
             tag   = "  [active]" if active_kind == "groq" else ""
@@ -456,7 +443,7 @@ class MainWindow(QMainWindow):
 
         # ── Nothing set up at all ────────────────────────────────────────────
         has_ollama = bool(or_)
-        if not profiles and not groq_key and not has_ollama:
+        if not profiles and not groq_key and not gemini_key and not has_ollama:
             self._backend_combo.insertItem(
                 0, "No backends configured — open Settings", {"kind": "none"})
             combo_select = 0
@@ -499,7 +486,7 @@ class MainWindow(QMainWindow):
                 self._refresh_backend_combo()
                 self._update_status_bar()
 
-        elif kind in ("groq", "ollama", "none"):
+        elif kind in ("gemini", "groq", "ollama", "none"):
             # These are not user-switchable from this combo (keys / Ollama
             # config live in Settings); just refresh the display so the
             # combo shows accurate live state.

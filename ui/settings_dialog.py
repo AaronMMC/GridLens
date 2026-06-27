@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from core.config import load_config, save_config
 from core.backends.claude_backend import test_key as _test_claude
 from core.backends.groq_backend import test_key as _test_groq
+from core.backends.gemini_backend import test_key as _test_gemini
 from ui.animated_widgets import WaveHeaderWidget
 
 
@@ -220,6 +221,7 @@ class SettingsDialog(QDialog):
 
         cl.addWidget(_lbl_section("AI Backends"))
         cl.addWidget(self._build_claude())
+        cl.addWidget(self._build_gemini())
         cl.addWidget(self._build_groq())
         cl.addWidget(self._build_ollama())
 
@@ -310,6 +312,40 @@ class SettingsDialog(QDialog):
     def _set_active(self):
         i = self._profile_list.currentRow()
         if i >= 0: self._active_idx = i; self._refresh_profiles()
+
+    # ── Gemini ────────────────────────────────────────────────────────────────
+
+    def _build_gemini(self) -> QGroupBox:
+        grp = QGroupBox("Google Gemini  (Recommended, best free tier)")
+        lay = QVBoxLayout(grp); lay.setSpacing(8)
+
+        lay.addWidget(QLabel("API key:"))
+        row = QHBoxLayout()
+        self._gemini_key = QLineEdit(self._cfg.get("GEMINI_API_KEY", ""))
+        self._gemini_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gemini_key.setPlaceholderText("AIzaSy...")
+        row.addWidget(self._gemini_key)
+        show = QPushButton("Show"); show.setCheckable(True); show.setFixedWidth(52)
+        show.toggled.connect(lambda on: self._gemini_key.setEchoMode(
+            QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
+        row.addWidget(show)
+        lay.addLayout(row)
+
+        tr = QHBoxLayout()
+        tb = QPushButton("Test key"); tb.clicked.connect(self._test_gemini_ui)
+        self._gemini_st = _status_lbl()
+        tr.addWidget(tb); tr.addWidget(self._gemini_st, 1)
+        lay.addLayout(tr)
+
+        link = QPushButton("Get a free key  ->  aistudio.google.com/app/apikey")
+        link.setProperty("variant", "link")
+        link.clicked.connect(lambda: webbrowser.open("https://aistudio.google.com/app/apikey"))
+        lay.addWidget(link)
+        return grp
+
+    def _test_gemini_ui(self):
+        ok, msg = _test_gemini(self._gemini_key.text())
+        _apply_status(self._gemini_st, ok, msg)
 
     # ── Groq ──────────────────────────────────────────────────────────────────
 
@@ -471,6 +507,7 @@ class SettingsDialog(QDialog):
                 claude_profiles=self._profiles,
                 active_claude_profile=self._active_idx,
                 groq_api_key=self._groq_key.text(),
+                gemini_api_key=self._gemini_key.text(),
                 ollama_base_url=self._ollama_url.text(),
                 default_output="excel" if self._excel_radio.isChecked() else "csv",
                 max_resolution=int(self._res_combo.currentText()),

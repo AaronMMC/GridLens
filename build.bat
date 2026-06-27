@@ -1,5 +1,5 @@
 @echo off
-REM SpreadsheetScanner build script
+REM GridLens build script
 REM Requires: pip install pyinstaller  +  Poppler in poppler\bin (optional, for PDF support)
 
 IF EXIST "poppler\bin" (
@@ -7,7 +7,7 @@ IF EXIST "poppler\bin" (
     pyinstaller --onefile ^
         --windowed ^
         --icon=assets\icon.ico ^
-        --name=SpreadsheetScanner ^
+        --name=GridLens ^
         --add-data ".env.example;." ^
         --add-binary "poppler\bin\*;poppler\bin" ^
         --noconfirm ^
@@ -17,11 +17,11 @@ IF EXIST "poppler\bin" (
     pyinstaller --onefile ^
         --windowed ^
         --icon=assets\icon.ico ^
-        --name=SpreadsheetScanner ^
+        --name=GridLens ^
         --add-data ".env.example;." ^
         --noconfirm ^
         main.py
 )
 
 echo.
-echo Done. Check the dist\ folder for SpreadsheetScanner.exe
+echo Done. Check the dist\ folder for GridLens.exe

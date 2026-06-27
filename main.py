@@ -15,7 +15,7 @@ def _set_windows_taskbar_icon():
     """Set AppUserModelID so Windows shows our icon in the taskbar."""
     try:
         import ctypes
-        app_id = "ScanMe.SpreadsheetScanner.1.0"
+        app_id = "GridLens.GridLens.1.0"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
         pass
@@ -27,17 +27,17 @@ def _rebuild_exe():
         print("--build is only available when running from source (python main.py)")
         sys.exit(1)
     base = Path(__file__).resolve().parent
-    spec = base / "SpreadsheetScanner.spec"
+    spec = base / "GridLens.spec"
     if not spec.exists():
-        print("Error: SpreadsheetScanner.spec not found. Run from the project root.")
+        print("Error: GridLens.spec not found. Run from the project root.")
         sys.exit(1)
-    print("Building SpreadsheetScanner.exe ...")
+    print("Building GridLens.exe ...")
     result = subprocess.run(
         [sys.executable, "-m", "PyInstaller", str(spec), "--noconfirm"],
         cwd=str(base),
     )
     if result.returncode == 0:
-        print("Build succeeded!  dist/SpreadsheetScanner.exe updated.")
+        print("Build succeeded!  dist/GridLens.exe updated.")
     else:
         print("Build failed!")
     sys.exit(result.returncode)
@@ -75,7 +75,7 @@ def main():
             load_dotenv(example)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("SpreadsheetScanner")
+    app.setApplicationName("GridLens")
 
     # Apply app-wide stylesheet
     from ui.theme import STYLESHEET
@@ -87,6 +87,29 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     try:
+        from core.config import load_config
+        cfg = load_config()
+        has_claude = cfg.get("active_profile") and cfg.get("active_profile", {}).get("key")
+        has_api_key = has_claude or cfg.get("GROQ_API_KEY") or cfg.get("GEMINI_API_KEY")
+        
+        if not has_api_key:
+            from ui.first_run_wizard import FirstRunWizard
+            from PyQt6.QtWidgets import QDialog
+            wizard = FirstRunWizard()
+            if wizard.exec() == QDialog.DialogCode.Accepted and wizard.should_proceed:
+                from core.config import save_config
+                save_config(
+                    claude_profiles=cfg.get("all_profiles", []),
+                    active_claude_profile=cfg.get("active_profile_idx", 0),
+                    groq_api_key=wizard.groq_key,
+                    gemini_api_key=wizard.gemini_key,
+                    ollama_base_url=cfg.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+                    default_output=cfg.get("DEFAULT_OUTPUT", "csv"),
+                    max_resolution=cfg.get("MAX_RESOLUTION", 2000),
+                    auto_fallback=cfg.get("AUTO_FALLBACK", True),
+                    custom_providers=cfg.get("custom_providers", []),
+                )
+
         from ui.main_window import MainWindow
         window = MainWindow()
         window.show()
@@ -105,7 +128,7 @@ def main():
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(
                 None,
-                "SpreadsheetScanner — startup error",
+                "GridLens — startup error",
                 f"The app failed to start:\n\n{exc}\n\n"
                 "A full crash log has been written next to the executable."
             )

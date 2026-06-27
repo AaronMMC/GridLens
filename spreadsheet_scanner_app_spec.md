@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-**App name:** SpreadsheetScanner (working title)
+**App name:** GridLens (working title)
 
 **What it does:**
 1. User imports a photo (PNG/JPG), PDF scan, or Google Drive file of a physical spreadsheet — via drag-and-drop, file dialog, or Google Drive picker.
@@ -758,7 +758,7 @@ For the Ollama warning dialog, the worker pauses using `threading.Event` until t
 pyinstaller --onefile ^
   --windowed ^
   --icon=assets/icon.ico ^
-  --name=SpreadsheetScanner ^
+  --name=GridLens ^
   --add-data ".env.example;." ^
   --add-data "credentials/google_oauth_client.json;credentials" ^
   --add-binary "poppler/bin/*;poppler/bin" ^

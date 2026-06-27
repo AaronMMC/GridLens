@@ -10,7 +10,7 @@ $pyArgs = @(
     "--onefile",
     "--windowed",
     "--icon=assets/icon.ico",
-    "--name=SpreadsheetScanner",
+    "--name=GridLens",
     "--add-data", ".env.example;.",
     "--noconfirm",
     "main.py"
@@ -32,7 +32,7 @@ Write-Host "Running PyInstaller..."
 pyinstaller @pyArgs
 
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "Build succeeded! Executable at: dist/SpreadsheetScanner.exe"
+    Write-Host "Build succeeded! Executable at: dist/GridLens.exe"
 } else {
     Write-Error "PyInstaller failed with exit code $LASTEXITCODE"
     exit $LASTEXITCODE

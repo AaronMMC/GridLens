@@ -30,7 +30,7 @@ import sys
 import os
 from pathlib import Path
 
-APP_NAME = "SpreadsheetScanner"
+APP_NAME = "GridLens"
 
 
 def get_app_dir() -> Path:

@@ -1,5 +1,6 @@
 anthropic
 groq
+google-genai
 openpyxl
 PyQt6
 pyqt6-sip

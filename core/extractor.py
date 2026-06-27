@@ -1,4 +1,4 @@
-from core.backends import claude_backend, groq_backend, ollama_backend
+from core.backends import claude_backend, groq_backend, ollama_backend, gemini_backend
 from core.backends.claude_backend import QuotaExhaustedError
 from core.backends.ollama_backend import (
     OllamaNotRunningError, is_ollama_running, check_model_available,
@@ -34,6 +34,8 @@ def get_available_backend(config: dict) -> str:
     profile = config.get("active_profile")
     if profile and profile.get("key"):
         return "claude"
+    if config.get("GEMINI_API_KEY"):
+        return "gemini"
     if config.get("GROQ_API_KEY"):
         return "groq"
     ollama_url = config.get("OLLAMA_BASE_URL", OLLAMA_BASE_URL)
@@ -46,8 +48,9 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
                    quota_cb=None, ollama_hw_cb=None) -> dict:
     profile = config.get("active_profile")
     groq_key = config.get("GROQ_API_KEY")
+    gemini_key = config.get("GEMINI_API_KEY")
     ollama_url = config.get("OLLAMA_BASE_URL", OLLAMA_BASE_URL)
-    has_api_key = (profile and profile.get("key")) or groq_key
+    has_api_key = (profile and profile.get("key")) or groq_key or gemini_key
     has_ollama = is_ollama_running(ollama_url)
 
     if not has_api_key and not has_ollama:
@@ -79,7 +82,19 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
                         image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
                         alt["key"], alt["model"]
                     )
-                # choice == "next" -> fall through to Groq
+                # choice == "next" -> fall through to Gemini/Groq
+
+    # --- Backend 1.5: Gemini ---
+    if gemini_key:
+        try:
+            if status_cb:
+                status_cb("Scanning with Gemini (free tier)...")
+            return gemini_backend.run(
+                image_bytes, media_type, SYSTEM_PROMPT, USER_PROMPT,
+                gemini_key
+            )
+        except Exception:
+            pass
 
     # --- Backend 2: Groq ---
     if groq_key:
@@ -96,7 +111,7 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
     # --- Backend 3: Ollama (local) ---
     if not has_ollama:
         raise RuntimeError(
-            "Ollama is not running, and no working Claude or Groq key is "
+            "Ollama is not running, and no working API key is "
             "configured. Install Ollama from https://ollama.com and run "
             "'ollama serve', or add an API key in Settings."
         )

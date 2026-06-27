@@ -54,6 +54,7 @@ def load_config() -> dict:
         "all_profiles":       profiles,
         "active_profile_idx": active,
         "GROQ_API_KEY":       os.getenv("GROQ_API_KEY", "").strip(),
+        "GEMINI_API_KEY":     os.getenv("GEMINI_API_KEY", "").strip(),
         "OLLAMA_BASE_URL":    (os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
                                or "http://localhost:11434"),
         "DEFAULT_OUTPUT":     os.getenv("DEFAULT_OUTPUT", "csv"),
@@ -73,6 +74,7 @@ def save_config(
     claude_profiles: list,
     active_claude_profile: int,
     groq_api_key: str,
+    gemini_api_key: str,
     ollama_base_url: str,
     default_output: str,
     max_resolution: int,
@@ -85,6 +87,7 @@ def save_config(
     set_key(s, "CLAUDE_PROFILES",       json.dumps(claude_profiles))
     set_key(s, "ACTIVE_CLAUDE_PROFILE", str(active_claude_profile))
     set_key(s, "GROQ_API_KEY",          groq_api_key.strip())
+    set_key(s, "GEMINI_API_KEY",        gemini_api_key.strip())
     set_key(s, "OLLAMA_BASE_URL",       ollama_base_url.strip() or "http://localhost:11434")
     set_key(s, "DEFAULT_OUTPUT",        default_output)
     set_key(s, "MAX_RESOLUTION",        str(max_resolution))

@@ -17,9 +17,10 @@ from ui.animated_widgets import WaveHeaderWidget
 class FirstRunWizard(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Welcome to SpreadsheetScanner")
+        self.setWindowTitle("Welcome to GridLens")
         self.setMinimumSize(520, 460)
         self._groq_key   = ""
+        self._gemini_key = ""
         self._proceed    = False
         self._open_settings = False
         self._build()
@@ -30,7 +31,7 @@ class FirstRunWizard(QDialog):
         root.setSpacing(0)
 
         root.addWidget(WaveHeaderWidget(
-            "Welcome to SpreadsheetScanner",
+            "Welcome to GridLens",
             "Set up an AI backend to get started"
         ))
 
@@ -95,6 +96,21 @@ class FirstRunWizard(QDialog):
         gr_lay.addLayout(key_row)
         cl.addWidget(gr_grp)
 
+        # Option 3: Gemini (Recommended)
+        gm_grp = QGroupBox("Option 3 — Google Gemini API  (Recommended, best free vision tier)")
+        gm_lay = QVBoxLayout(gm_grp); gm_lay.setSpacing(8)
+        gm_lay.addWidget(QLabel("Sign up for a free Gemini key — highly accurate table extraction."))
+
+        gm_key_row = QHBoxLayout()
+        self._gemini_input = QLineEdit()
+        self._gemini_input.setPlaceholderText("AIzaSy...")
+        gm_key_row.addWidget(self._gemini_input)
+        gm_get_btn = QPushButton("Get free key")
+        gm_get_btn.clicked.connect(lambda: webbrowser.open("https://aistudio.google.com/app/apikey"))
+        gm_key_row.addWidget(gm_get_btn)
+        gm_lay.addLayout(gm_key_row)
+        cl.addWidget(gm_grp)
+
         # Buttons
         btn_row = QHBoxLayout()
         cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(self.reject)
@@ -131,15 +147,19 @@ class FirstRunWizard(QDialog):
 
     def _on_start(self):
         self._groq_key = self._groq_input.text().strip()
+        self._gemini_key = self._gemini_input.text().strip()
         self._proceed  = True; self.accept()
 
     def _on_settings(self):
         self._groq_key      = self._groq_input.text().strip()
+        self._gemini_key    = self._gemini_input.text().strip()
         self._proceed       = True
         self._open_settings = True; self.accept()
 
     @property
     def groq_key(self)          -> str:  return self._groq_key
+    @property
+    def gemini_key(self)        -> str:  return self._gemini_key
     @property
     def should_proceed(self)    -> bool: return self._proceed
     @property
