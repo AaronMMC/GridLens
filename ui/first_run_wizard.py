@@ -1,3 +1,9 @@
+"""
+First-run wizard shown when no API keys are configured.
+
+Guides the user through setting up an AI backend:
+Ollama (local), Groq (cloud), or Gemini (cloud).
+"""
 import threading
 import webbrowser
 

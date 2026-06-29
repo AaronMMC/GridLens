@@ -1,3 +1,10 @@
+"""
+Image preprocessing and PDF-to-image conversion.
+
+``preprocess_image()`` resizes, sharpens, and re-encodes an image as JPEG
+for upload to AI backends.  ``pdf_to_images()`` rasterises each PDF page
+to JPEG bytes.
+"""
 from PIL import Image, ImageFilter
 import io
 

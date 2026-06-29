@@ -1,3 +1,13 @@
+"""
+CSV and Excel export utilities for extracted table data.
+
+Call ``export_csv()`` or ``export_excel()`` with the same ``data`` dict
+structure returned by ``core.extractor.extract_table()``:
+
+.. code:: python
+
+    {"headers": ["Col1", "Col2"], "rows": [["a", "b"], ["c", "d"]]}
+"""
 import csv
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill

@@ -1,3 +1,9 @@
+"""
+Hardware warning dialog shown before running a local Ollama scan.
+
+Displays GPU / VRAM / RAM information and expected performance so the
+user can decide whether to proceed.
+"""
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QFrame
 )

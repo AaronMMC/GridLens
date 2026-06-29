@@ -1,3 +1,23 @@
+<#
+.SYNOPSIS
+    Build GridLens.exe using the PyInstaller spec file.
+
+.DESCRIPTION
+    Uses GridLens.spec which auto-generates version_info.txt from
+    core/version.py, ensuring the .exe file properties (right-click ->
+    Details) always reflect the current application version.
+
+    Poppler (for PDF) and Google OAuth credentials are bundled
+    automatically by the spec file when present.
+
+    Requires:
+        pyinstaller  (pip install pyinstaller)
+        Poppler in poppler/bin/  (optional)
+
+.EXAMPLE
+    .\build.ps1
+#>
+
 $ErrorActionPreference = "Stop"
 
 $pyinstaller = Get-Command pyinstaller -ErrorAction SilentlyContinue
@@ -6,34 +26,17 @@ if (-not $pyinstaller) {
     exit 1
 }
 
-$pyArgs = @(
-    "--onefile",
-    "--windowed",
-    "--icon=assets/icon.ico",
-    "--name=GridLens",
-    "--add-data", ".env.example;.",
-    "--noconfirm",
-    "main.py"
-)
+Write-Host "=== Building GridLens via spec file (GridLens.spec) ===" -ForegroundColor Cyan
+Write-Host "The spec auto-generates Windows version metadata from core/version.py." -ForegroundColor Gray
+Write-Host ""
 
-if (Test-Path -LiteralPath "poppler/bin") {
-    Write-Host "Poppler found - bundling..."
-    $pyArgs += @("--add-binary", "poppler/bin/*;poppler/bin")
-} else {
-    Write-Host "Poppler not found - PDF support disabled."
-}
+pyinstaller GridLens.spec --noconfirm
 
-if (Test-Path -LiteralPath "credentials/google_oauth_client.json") {
-    Write-Host "Google OAuth client found - bundling..."
-    $pyArgs += @("--add-data", "credentials/google_oauth_client.json;credentials")
-}
-
-Write-Host "Running PyInstaller..."
-pyinstaller @pyArgs
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "Build succeeded! Executable at: dist/GridLens.exe"
-} else {
+if ($LASTEXITCODE -ne 0) {
     Write-Error "PyInstaller failed with exit code $LASTEXITCODE"
     exit $LASTEXITCODE
 }
+
+Write-Host ""
+Write-Host "Build complete." -ForegroundColor Green
+Write-Host "Executable: dist\GridLens.exe" -ForegroundColor Green

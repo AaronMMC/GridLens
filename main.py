@@ -3,8 +3,8 @@ import os
 import subprocess
 from pathlib import Path
 
-# Guard for PyInstaller windowed mode — stdout/stderr are None when there's
-# no console, and some libraries try to write to them on import.
+from core.version import __version__, APP_NAME
+
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w")
 if sys.stderr is None:
@@ -15,7 +15,7 @@ def _set_windows_taskbar_icon():
     """Set AppUserModelID so Windows shows our icon in the taskbar."""
     try:
         import ctypes
-        app_id = "GridLens.GridLens.1.0"
+        app_id = f"{APP_NAME}.{APP_NAME}.{__version__}"
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
         pass
@@ -75,7 +75,8 @@ def main():
             load_dotenv(example)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("GridLens")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(__version__)
 
     # Apply app-wide stylesheet
     from ui.theme import STYLESHEET

@@ -1,3 +1,9 @@
+"""
+Dialog shown when a Claude profile hits its API rate / quota limit.
+
+Lets the user switch to another Claude profile, open the Anthropic billing
+page, skip to the next backend, or cancel.
+"""
 import webbrowser
 
 from PyQt6.QtCore import Qt

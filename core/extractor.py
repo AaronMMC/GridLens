@@ -1,3 +1,14 @@
+"""
+Fallback-chain extraction orchestrator.
+
+``extract_table()`` tries backends in priority order:
+  1. Active Claude profile (if available)
+  2. Gemini (if key configured)
+  3. Groq (if key configured)
+  4. Local Ollama (if running and model available)
+
+Each step can raise ``QuotaExhaustedError`` to trigger the next backend.
+"""
 from core.backends import claude_backend, groq_backend, ollama_backend, gemini_backend
 from core.backends.claude_backend import QuotaExhaustedError
 from core.backends.ollama_backend import (

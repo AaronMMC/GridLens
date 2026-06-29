@@ -1,3 +1,10 @@
+"""
+Detect GPU, VRAM, RAM and classify hardware tier for Ollama inference.
+
+``check_ollama_requirements()`` returns a dict with tier classification:
+``"good"``, ``"marginal"``, or ``"cpu_only"`` along with human-readable
+messages shown to the user before a local scan.
+"""
 import psutil
 import requests
 

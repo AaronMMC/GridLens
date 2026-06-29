@@ -1,3 +1,8 @@
+"""
+Google Gemini backend — uses gemini-2.5-flash with JSON response mode.
+
+Exposes ``run()`` for extraction and ``test_key()`` for settings validation.
+"""
 import json
 from google import genai
 from google.genai import types

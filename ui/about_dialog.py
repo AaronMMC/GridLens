@@ -6,11 +6,12 @@ from PyQt6.QtWidgets import (
 )
 from ui.animated_widgets import WaveHeaderWidget
 from ui.theme import PURPLE_LT, TEXT, NAVY
+from core.version import __version__, APP_NAME, APP_AUTHOR
 
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("About GridLens")
+        self.setWindowTitle(f"About {APP_NAME}")
         self.setMinimumSize(480, 420)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         self._build_ui()
@@ -20,8 +21,7 @@ class AboutDialog(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # Header
-        header = WaveHeaderWidget("GridLens", "Version 1.0.0")
+        header = WaveHeaderWidget(APP_NAME, f"Version {__version__}")
         lay.addWidget(header)
 
         # Content area
@@ -32,7 +32,7 @@ class AboutDialog(QDialog):
         c_lay.setSpacing(16)
 
         desc = QLabel(
-            "<b>GridLens</b> is an open-source, AI-powered desktop application "
+            f"<b>{APP_NAME}</b> is an open-source, AI-powered desktop application "
             "designed to seamlessly convert photographs and scanned documents into "
             "structured digital spreadsheets (CSV or Excel).<br><br>"
             "<i>Why was it made?</i><br>"
@@ -53,7 +53,7 @@ class AboutDialog(QDialog):
         sep.setStyleSheet("background-color: #2A2060; border: none; max-height: 1px;")
         c_lay.addWidget(sep)
 
-        author_lbl = QLabel("Originally created by <b>Aaron Miguel Cardenas</b>")
+        author_lbl = QLabel(f"Originally created by <b>{APP_AUTHOR}</b>")
         author_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         author_lbl.setStyleSheet(f"color: {PURPLE_LT}; font-size: 14px;")
         c_lay.addWidget(author_lbl)

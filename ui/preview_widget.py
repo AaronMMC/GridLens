@@ -1,3 +1,9 @@
+"""
+Editable table widget for previewing and editing extracted data.
+
+Highlights unreadable cells (``"?"``) in orange.  Use ``load_data()``
+to populate and ``get_data()`` to retrieve edits.
+"""
 from PyQt6.QtWidgets import (
     QTableWidget, QHeaderView, QTableWidgetItem, QAbstractItemView
 )
