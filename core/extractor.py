@@ -130,7 +130,9 @@ def extract_table(image_bytes, media_type, config, status_cb=None,
                 image_bytes, media_type, SYSTEM_PROMPT, user_prompt,
                 gemini_key
             )
-        except Exception:
+        except QuotaExhaustedError:
+            pass
+        except RuntimeError:
             pass
 
     # --- Backend 2: Groq ---
